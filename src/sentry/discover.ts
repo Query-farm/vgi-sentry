@@ -48,7 +48,8 @@ export function columnName(field: string): string {
 
 const COUNT_FN = /^(count|count_unique|count_if|count_miserable|count_web_vitals|count_scores)\(/;
 const TIME_FN = /^(last_seen|first_seen|min\(timestamp\)|max\(timestamp\))/;
-const NUMERIC_FIELD = /^(transaction\.duration|span\.duration|span\.self_time|measurements\.|spans\.|http\.response_content_length|stack\.lineno)/;
+const NUMERIC_FIELD =
+  /^(transaction\.duration|span\.duration|span\.self_time|measurements\.|spans\.|http\.response_content_length|stack\.lineno)/;
 
 export const isAggregate = (f: string): boolean => /^[a-z_0-9]+\(.*\)$/.test(f);
 
@@ -95,7 +96,8 @@ export function discoverFields(raw: unknown): DiscoverField[] {
   const fields = strArray(raw)
     .map((f) => f.trim())
     .filter(Boolean);
-  if (fields.length === 0) throw new Error("discover: fields must list at least one field, e.g. ['transaction', 'count()']");
+  if (fields.length === 0)
+    throw new Error("discover: fields must list at least one field, e.g. ['transaction', 'count()']");
   if (fields.length > 20) throw new Error("discover: at most 20 fields per query");
   const seen = new Map<string, string>();
   return fields.map((field) => {
@@ -308,7 +310,13 @@ export const discover = defineTableFunction<DiscoverArgs, DiscoverState>({
         state.cursor = "";
       }
       if (rows.length === 0) continue;
-      out.emit(rowsToBatch(rows.map((r) => ({ ...r, __ctx: { organization: org } })), columns, params.outputSchema));
+      out.emit(
+        rowsToBatch(
+          rows.map((r) => ({ ...r, __ctx: { organization: org } })),
+          columns,
+          params.outputSchema,
+        ),
+      );
       return;
     }
   },

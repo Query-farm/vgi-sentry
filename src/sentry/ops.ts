@@ -112,8 +112,14 @@ export const releases = defineSentryTable<ReleaseArgs>({
     C.big("commit_count", "Commits associated with the release.", "commitCount"),
     C.big("deploy_count", "Deploys of the release.", "deployCount"),
     C.str("last_deploy_environment", "Environment of the most recent deploy.", "lastDeploy.environment"),
-    C.iso("last_deploy_at", "When the most recent deploy finished.", (r) => r.lastDeploy?.dateFinished ?? r.lastDeploy?.dateStarted),
-    C.strList("authors", "Commit author names.", (r) => (Array.isArray(r.authors) ? r.authors.map((a: Row) => a?.name ?? a?.email ?? null) : null)),
+    C.iso(
+      "last_deploy_at",
+      "When the most recent deploy finished.",
+      (r) => r.lastDeploy?.dateFinished ?? r.lastDeploy?.dateStarted,
+    ),
+    C.strList("authors", "Commit author names.", (r) =>
+      Array.isArray(r.authors) ? r.authors.map((a: Row) => a?.name ?? a?.email ?? null) : null,
+    ),
     C.strList("projects", "Slugs of the release's projects.", projectList),
   ],
   request: releaseRequest(false),
@@ -152,7 +158,11 @@ export const releaseHealth = defineSentryTable<ReleaseArgs>({
     C.num("crash_free_sessions", "Crash-free sessions, percent.", "__project.healthData.crashFreeSessions"),
     C.num("crash_free_users", "Crash-free users, percent.", "__project.healthData.crashFreeUsers"),
     C.num("adoption", "Percent of users on this release (last 24h).", "__project.healthData.adoption"),
-    C.num("sessions_adoption", "Percent of sessions on this release (last 24h).", "__project.healthData.sessionsAdoption"),
+    C.num(
+      "sessions_adoption",
+      "Percent of sessions on this release (last 24h).",
+      "__project.healthData.sessionsAdoption",
+    ),
     C.big("total_sessions", "Sessions in the summary period.", "__project.healthData.totalSessions"),
     C.big("total_users", "Users in the summary period.", "__project.healthData.totalUsers"),
     C.big("sessions_crashed", "Crashed sessions in the summary period.", "__project.healthData.sessionsCrashed"),
@@ -223,7 +233,11 @@ export const releaseDeploys = defineSentryTable<{ organization: string | null; v
     C.str("name", "Deploy name.", "name"),
     C.iso("started_at", "When the deploy started.", "dateStarted"),
     C.iso("finished_at", "When the deploy finished.", "dateFinished"),
-    C.iso("created_at", "finished_at, else started_at (web-deploy vocabulary).", (r) => r.dateFinished ?? r.dateStarted),
+    C.iso(
+      "created_at",
+      "finished_at, else started_at (web-deploy vocabulary).",
+      (r) => r.dateFinished ?? r.dateStarted,
+    ),
     C.str("url", "URL of the deploy (CI run, dashboard …).", "url"),
   ],
   request: (s) => ({
@@ -368,7 +382,9 @@ export const metricAlertRules = defineSentryTable<{ organization: string | null 
     C.str("query", "Event search the aggregate is limited to.", "query"),
     C.str("aggregate", "Aggregate expression, e.g. count() or p95(transaction.duration).", "aggregate"),
     C.int("time_window_minutes", "Aggregation window, minutes.", "timeWindow"),
-    C.str("threshold_type", "above or below.", (r) => (r.thresholdType === 0 ? "above" : r.thresholdType === 1 ? "below" : null)),
+    C.str("threshold_type", "above or below.", (r) =>
+      r.thresholdType === 0 ? "above" : r.thresholdType === 1 ? "below" : null,
+    ),
     C.num("critical_threshold", "Threshold of the critical trigger.", triggerThreshold("critical")),
     C.num("warning_threshold", "Threshold of the warning trigger (NULL: none).", triggerThreshold("warning")),
     C.num("resolve_threshold", "Value at which the alert resolves (NULL: the trigger threshold).", "resolveThreshold"),
@@ -416,7 +432,11 @@ export const metricAlertIncidents = defineSentryTable<{ organization: string | n
     C.str("id", "Internal incident id.", "id"),
     C.str("title", "Incident title (the alert rule name).", "title"),
     C.str("status", "Normalized: triggered or resolved.", (r) => (r.status === 2 ? "resolved" : "triggered"), false),
-    C.str("raw_status", "Sentry status: open, warning, critical or closed.", (r) => INCIDENT_STATUS[r.status as number] ?? String(r.status)),
+    C.str(
+      "raw_status",
+      "Sentry status: open, warning, critical or closed.",
+      (r) => INCIDENT_STATUS[r.status as number] ?? String(r.status),
+    ),
     C.str("severity", "Highest severity reached: warning or critical.", (r) =>
       r.status === 20 ? "critical" : r.status === 10 ? "warning" : null,
     ),
@@ -483,7 +503,8 @@ export const monitors = defineSentryTable<{ organization: string | null; environ
     "worst environment status (ok, error, missed_checkin, timeout), last_check_in, next_check_in, and every " +
     "environment as a list of {name, status, is_muted, last_check_in, next_check_in}.",
   docMd: "## monitors(environment := NULL)\n\nOne row per cron monitor.",
-  pushdown: "`environment` (named) → `environment=`; `project_id` (=) → `project=`; `organization` picks organizations.",
+  pushdown:
+    "`environment` (named) → `environment=`; `project_id` (=) → `project=`; `organization` picks organizations.",
   args: { environment: utf8() },
   argDocs: { environment: "Environment name (named); only monitors with check-ins there." },
   argDefaults: { environment: null },
@@ -503,11 +524,15 @@ export const monitors = defineSentryTable<{ organization: string | null; environ
     C.int("max_runtime_minutes", "Runtime after which an in-progress check-in times out.", "config.max_runtime"),
     C.int("failure_issue_threshold", "Consecutive failures before an issue opens.", "config.failure_issue_threshold"),
     C.iso("created_at", "When the monitor was created.", "dateCreated"),
-    C.str("environment_status", "Worst status across environments: error, timeout, missed_checkin, ok, active.", (r) => {
-      const order = ["error", "timeout", "missed_checkin", "ok", "active"];
-      const st = (Array.isArray(r.environments) ? r.environments : []).map((e: Row) => e?.status);
-      return order.find((o) => st.includes(o)) ?? (st[0] ?? null);
-    }),
+    C.str(
+      "environment_status",
+      "Worst status across environments: error, timeout, missed_checkin, ok, active.",
+      (r) => {
+        const order = ["error", "timeout", "missed_checkin", "ok", "active"];
+        const st = (Array.isArray(r.environments) ? r.environments : []).map((e: Row) => e?.status);
+        return order.find((o) => st.includes(o)) ?? st[0] ?? null;
+      },
+    ),
     C.iso("last_check_in", "Latest check-in across environments.", (r) => maxIso(r.environments, "lastCheckIn")),
     C.iso("next_check_in", "Next expected check-in across environments.", (r) => minIso(r.environments, "nextCheckIn")),
     C.structList(
@@ -541,11 +566,15 @@ export const monitors = defineSentryTable<{ organization: string | null; environ
 });
 
 function maxIso(list: unknown, key: string): string | null {
-  const v = (Array.isArray(list) ? list : []).map((e: Row) => e?.[key]).filter((x): x is string => typeof x === "string");
+  const v = (Array.isArray(list) ? list : [])
+    .map((e: Row) => e?.[key])
+    .filter((x): x is string => typeof x === "string");
   return v.length ? (v.sort().at(-1) ?? null) : null;
 }
 function minIso(list: unknown, key: string): string | null {
-  const v = (Array.isArray(list) ? list : []).map((e: Row) => e?.[key]).filter((x): x is string => typeof x === "string");
+  const v = (Array.isArray(list) ? list : [])
+    .map((e: Row) => e?.[key])
+    .filter((x): x is string => typeof x === "string");
   return v.length ? (v.sort()[0] ?? null) : null;
 }
 
@@ -568,7 +597,8 @@ export const monitorCheckins = defineSentryTable<{
     "created_at and expected_at (when the schedule expected it). monitor_slug := picks one monitor (also from " +
     "WHERE monitor_slug = / IN); otherwise every monitor is read. Window: stats_period (default 90d) or " +
     "start_time / end_time; a pushed created_at range becomes start / end.",
-  docMd: "## monitor_checkins(monitor_slug := NULL, environment, stats_period, start_time, end_time)\n\nOne row per check-in.",
+  docMd:
+    "## monitor_checkins(monitor_slug := NULL, environment, stats_period, start_time, end_time)\n\nOne row per check-in.",
   pushdown:
     "`monitor_slug` (=, IN) picks the monitors; `environment` (=) → `environment=`; `created_at` ranges → `start` / " +
     "`end` when no window argument is given.",
@@ -674,7 +704,8 @@ export const replays = defineSentryTable<ReplayArgs>({
     "device names and versions, replay_type (session / buffer), is_archived, the visited urls, and user_id only " +
     "(no email, IP or name). Arguments (named): project_id, environment, query (replay search, e.g. " +
     "'count_rage_clicks:>0'), sort ('-started_at' default), stats_period (default 90d) / start_time / end_time.",
-  docMd: "## replays(project_id, environment, query, sort := '-started_at', stats_period, start_time, end_time)\n\nOne row per replay.",
+  docMd:
+    "## replays(project_id, environment, query, sort := '-started_at', stats_period, start_time, end_time)\n\nOne row per replay.",
   pushdown:
     "`environment` (=) → `environment=`; `project_id` (=) → `project=`; `browser_name`, `os_name`, `platform` (=, IN, " +
     "!=) → `browser.name:` / `os.name:` / `platform:`; `error_count`, `rage_click_count`, `dead_click_count` `>= / >` → " +
@@ -800,7 +831,8 @@ export const userFeedback = defineSentryTable<{
   args: { project_slug: utf8(), include_pii: bool },
   argDocs: {
     project_slug: PROJECT_SLUG_DOC,
-    include_pii: "Return the reporter's name and email (named, default false). Only enable when you are allowed to process them.",
+    include_pii:
+      "Return the reporter's name and email (named, default false). Only enable when you are allowed to process them.",
   },
   argDefaults: { project_slug: null, include_pii: false },
   subScopes: projectScopes,
@@ -821,7 +853,8 @@ export const userFeedback = defineSentryTable<{
     path: `/projects/${enc(s.organization)}/${enc(s.project_slug ?? "")}/user-feedback/`,
     paging: "cursor",
   }),
-  rows: (body, _s, ctx) => (Array.isArray(body) ? (body as Row[]) : []).map((r) => ({ ...r, __pii: ctx.args.include_pii === true })),
+  rows: (body, _s, ctx) =>
+    (Array.isArray(body) ? (body as Row[]) : []).map((r) => ({ ...r, __pii: ctx.args.include_pii === true })),
   notFoundEmpty: true,
   examples: [
     {
@@ -916,19 +949,28 @@ export const usageStats = defineSentryTable<StatsArgs>({
     "category is error, transaction, attachment, replay, profile, monitor, span …; quantity counts items " +
     "(bytes for attachments). interval := '1d' (default) or '1h'; window: stats_period (default 30d) or " +
     "start_time / end_time.",
-  docMd: "## usage_stats(interval := '1d', stats_period := '30d', start_time, end_time)\n\nOne row per bucket and group.",
+  docMd:
+    "## usage_stats(interval := '1d', stats_period := '30d', start_time, end_time)\n\nOne row per bucket and group.",
   pushdown:
     "`category` (=, IN) → `category=`; `outcome` (=, IN) → `outcome=`; `reason` (=) → `reason=`; `project_id` (=, IN) → " +
     "`project=`; `organization` picks organizations.",
   args: { interval: utf8(), ...WINDOW_ARGS },
-  argDocs: { interval: "Bucket size (named): 1d (default) or 1h.", ...WINDOW_DOCS, stats_period: "Relative window (named), default 30d." },
+  argDocs: {
+    interval: "Bucket size (named): 1d (default) or 1h.",
+    ...WINDOW_DOCS,
+    stats_period: "Relative window (named), default 30d.",
+  },
   argDefaults: { interval: "1d", stats_period: null, start_time: null, end_time: null },
   argConstraints: { interval: { choices: ["1h", "1d"] }, ...WINDOW_CONSTRAINTS },
   columns: [
     ORG_COL,
     C.iso("time", "Start of the bucket.", "__time", false),
     C.str("category", "Data category: error, transaction, attachment, replay, profile, monitor, span …", "by.category"),
-    C.str("outcome", "accepted, filtered, rate_limited, invalid, abuse, client_discard, cardinality_limited.", "by.outcome"),
+    C.str(
+      "outcome",
+      "accepted, filtered, rate_limited, invalid, abuse, client_discard, cardinality_limited.",
+      "by.outcome",
+    ),
     C.str("reason", "Why the item was filtered / dropped (NULL or 'none' when accepted).", "by.reason"),
     C.str("project_id", "Project id.", (r) => (r.by?.project == null ? null : String(r.by.project))),
     C.big("quantity", "Items (bytes for attachments) in the bucket.", "__quantity", false),

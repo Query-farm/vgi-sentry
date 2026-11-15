@@ -34,10 +34,6 @@ import {
 
 export const Q = "sentry.main";
 
-const PROJECT_SCOPE_DOC =
-  "Project slug (named). NULL reads every project of the organization (one call per project); a pushed " +
-  "WHERE project_slug = / IN (...) works the same way.";
-
 /** Sub-scopes: one per project slug (argument, pushed filter, or every project). */
 export async function projectScopes(
   org: string,
@@ -223,7 +219,10 @@ export const teams = defineSentryTable<{ organization: string | null }>({
     };
   },
   examples: [
-    { sql: `SELECT slug, member_count, projects FROM ${Q}.teams() ORDER BY member_count DESC`, description: "Teams by size" },
+    {
+      sql: `SELECT slug, member_count, projects FROM ${Q}.teams() ORDER BY member_count DESC`,
+      description: "Teams by size",
+    },
     {
       sql: `SELECT t.slug, p FROM ${Q}.teams() t, unnest(t.projects) AS u(p) ORDER BY t.slug, p`,
       description: "One row per team and owned project",
@@ -286,7 +285,10 @@ export const members = defineSentryTable<{ organization: string | null }>({
     };
   },
   examples: [
-    { sql: `SELECT role, count(*) AS members FROM ${Q}.members() GROUP BY role ORDER BY members DESC`, description: "Members per role" },
+    {
+      sql: `SELECT role, count(*) AS members FROM ${Q}.members() GROUP BY role ORDER BY members DESC`,
+      description: "Members per role",
+    },
     {
       sql: `SELECT name, role FROM ${Q}.members() WHERE NOT has_2fa AND NOT pending ORDER BY name`,
       description: "Active members without two-factor authentication",
@@ -364,7 +366,12 @@ export function issueQuery(
     }
   }
   const projects = args.project ? [args.project] : eqValues(constraints, "project_slug");
-  if (projects?.length) terms.push(projects.length === 1 ? `project:${searchValue(projects[0] as string)}` : `project:[${projects.map(searchValue).join(",")}]`);
+  if (projects?.length)
+    terms.push(
+      projects.length === 1
+        ? `project:${searchValue(projects[0] as string)}`
+        : `project:[${projects.map(searchValue).join(",")}]`,
+    );
   for (const t of args.tags ?? []) {
     const i = t.indexOf(":");
     if (i <= 0) throw new Error(`tags: '${t}' is not 'key:value'`);
@@ -470,9 +477,15 @@ export const issues = defineSentryTable<IssuesArgs>({
     C.str("title", "Issue title.", "title"),
     C.str("culprit", "Where the error happened (transaction or function).", "culprit"),
     C.str("status", "Sentry status: unresolved, resolved or ignored.", "status", false),
-    C.str("substatus", "ongoing, new, regressed, escalating, archived_until_escalating, archived_forever …", "substatus"),
-    C.str("incident_status", "Cross-worker incident status: triggered (unresolved), acknowledged (ignored/archived) or resolved.", (r) =>
-      incidentStatus(r.status),
+    C.str(
+      "substatus",
+      "ongoing, new, regressed, escalating, archived_until_escalating, archived_forever …",
+      "substatus",
+    ),
+    C.str(
+      "incident_status",
+      "Cross-worker incident status: triggered (unresolved), acknowledged (ignored/archived) or resolved.",
+      (r) => incidentStatus(r.status),
     ),
     C.str("level", "Level: fatal, error, warning, info, debug.", "level"),
     C.str("priority", "Issue priority: high, medium or low.", "priority"),
@@ -670,7 +683,11 @@ export const issueEvents = defineSentryTable<EventArgs>({
 
 // -------------------------------------------------------------------- issue tags
 
-export const issueTags = defineSentryTable<{ organization: string | null; issue_id: string | null; environment: string | null }>({
+export const issueTags = defineSentryTable<{
+  organization: string | null;
+  issue_id: string | null;
+  environment: string | null;
+}>({
   name: "issue_tags",
   description: "Tag keys of a Sentry issue with their top values and counts",
   title: "Sentry Issue Tags",

@@ -6,8 +6,8 @@
 # The worker to attach, relative to this directory. Build it first with `make build`.
 location = "bin/vgi-sentry-worker"
 
-# Fail on warnings while you build. Raise this to "info" before you publish the worker.
-fail_on = "warning"
+# Gate at info: every finding fails the check.
+fail_on = "info"
 
 # Waive a finding only with a kind and a reason, so the waiver can be audited:
 #   domain-exemption  permanent and legitimate for this worker

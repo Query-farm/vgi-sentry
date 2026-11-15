@@ -58,7 +58,9 @@ export function normalizeBaseUrl(raw: string): string {
     throw new SentryError(`sentry secret: base_url '${raw}' is not a URL (expected e.g. ${DEFAULT_BASE_URL})`);
   }
   if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) {
-    throw new SentryError("sentry secret: base_url must use https:// (http:// is accepted only for 127.0.0.1/localhost)");
+    throw new SentryError(
+      "sentry secret: base_url must use https:// (http:// is accepted only for 127.0.0.1/localhost)",
+    );
   }
   // Self-hosted installs may live under a path prefix (https://example.com/sentry).
   const path = url.pathname.replace(/\/+$/, "").replace(/\/api\/0$/, "");

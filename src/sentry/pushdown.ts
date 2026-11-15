@@ -142,7 +142,8 @@ export function neValues(constraints: Constraint[], column: string): string[] {
   for (const c of constraints) {
     if (c.column !== column) continue;
     if (c.kind === "cmp" && c.op === "ne" && typeof c.value === "string") out.push(c.value);
-    if (c.kind === "in" && c.negated && c.values.every((v) => typeof v === "string")) out.push(...(c.values as string[]));
+    if (c.kind === "in" && c.negated && c.values.every((v) => typeof v === "string"))
+      out.push(...(c.values as string[]));
   }
   return [...new Set(out)];
 }

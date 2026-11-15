@@ -22,8 +22,16 @@ export const SOURCE_URL = "https://github.com/Query-farm/vgi-sentry";
  * `vgi.category` must name one of these.
  */
 export const SCHEMA_CATEGORIES = [
-  { name: "organization", title: "Organization", description: "Organizations, projects, teams, members and environments." },
-  { name: "issues", title: "Issues", description: "Issues with pushed-down issue search, their events and tag distributions." },
+  {
+    name: "organization",
+    title: "Organization",
+    description: "Organizations, projects, teams, members and environments.",
+  },
+  {
+    name: "issues",
+    title: "Issues",
+    description: "Issues with pushed-down issue search, their events and tag distributions.",
+  },
   { name: "events", title: "Discover", description: "Discover / Explore queries over errors, transactions and spans." },
   { name: "releases", title: "Releases", description: "Releases, release health, deploys and commits." },
   { name: "alerts", title: "Alerts", description: "Issue and metric alert rules and metric alert incidents." },
@@ -65,7 +73,6 @@ export function objectTags(opts: {
 export function column(name: string, type: VgiDataType, comment: string, nullable = true): VgiField {
   return field(name, type, nullable, new Map([["comment", comment]]));
 }
-
 
 const SOURCES_MD =
   "\n\n**Upstream documentation**\n\n" +
@@ -187,8 +194,7 @@ export const EXECUTABLE_EXAMPLES = [
 
 export const CATALOG_TAGS: Record<string, string> = {
   "vgi.title": "Sentry Error and Performance Monitoring",
-  "vgi.subtitle":
-    "Sentry issues, events, Discover, releases, alerts, crons, replays and usage as SQL tables.",
+  "vgi.subtitle": "Sentry issues, events, Discover, releases, alerts, crons, replays and usage as SQL tables.",
   "vgi.doc_llm": CATALOG_DOC_LLM,
   "vgi.doc_md": CATALOG_DOC_MD,
   "vgi.source_url": SOURCE_URL,

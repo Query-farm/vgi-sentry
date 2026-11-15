@@ -41,7 +41,15 @@ import {
 } from "@query-farm/vgi";
 import { log } from "../log.ts";
 import { type Category, column, objectTags } from "../meta.ts";
-import { configFromSecrets, nextCursor, type QueryValue, SECRET_TYPE, type SentryConfig, SentryError, sentryGet } from "./client.ts";
+import {
+  configFromSecrets,
+  nextCursor,
+  type QueryValue,
+  SECRET_TYPE,
+  type SentryConfig,
+  SentryError,
+  sentryGet,
+} from "./client.ts";
 import { type Constraint, constraintsOf, eqValues } from "./pushdown.ts";
 
 // ------------------------------------------------------------------ column helpers
@@ -287,7 +295,12 @@ export async function listAll(
 export const enc = encodeURIComponent;
 
 /** A named argument's value if non-empty, else the pushed `= / IN` values of a column. */
-export function pick(args: Record<string, unknown>, constraints: Constraint[], arg: string, col = arg): string[] | undefined {
+export function pick(
+  args: Record<string, unknown>,
+  constraints: Constraint[],
+  arg: string,
+  col = arg,
+): string[] | undefined {
   const v = args[arg];
   if (typeof v === "string" && v !== "") return [v];
   if (typeof v === "bigint" || typeof v === "number") return [String(v)];
@@ -295,7 +308,11 @@ export function pick(args: Record<string, unknown>, constraints: Constraint[], a
 }
 
 /** The organizations a scan reads. */
-async function resolveOrgs(cfg: SentryConfig, args: Record<string, unknown>, constraints: Constraint[]): Promise<string[]> {
+async function resolveOrgs(
+  cfg: SentryConfig,
+  args: Record<string, unknown>,
+  constraints: Constraint[],
+): Promise<string[]> {
   const explicit = pick(args, constraints, "organization");
   if (explicit) return explicit;
   if (cfg.organization) return [cfg.organization];

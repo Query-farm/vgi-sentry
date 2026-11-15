@@ -18,7 +18,8 @@ const meta = (text: string) => new Map([["vgi_doc", text]]);
 /** CREATE SECRET (TYPE sentry, AUTH_TOKEN 'sntrys_…', REGION 'de' | BASE_URL '…', ORGANIZATION '…'). */
 export const SENTRY_SECRET_TYPE = {
   name: SECRET_TYPE,
-  description: "A Sentry auth token plus the host (sentry.io, a us / de region, or self-hosted) and default organization",
+  description:
+    "A Sentry auth token plus the host (sentry.io, a us / de region, or self-hosted) and default organization",
   schema: schema(
     [
       field(
@@ -41,8 +42,18 @@ export const SENTRY_SECRET_TYPE = {
           "Sentry host: https://sentry.io (default) or a self-hosted URL. http:// is accepted only for 127.0.0.1/localhost.",
         ),
       ),
-      field("region", utf8(), true, meta("Data-residency region of a sentry.io organization: us or de (used when BASE_URL is not set).")),
-      field("organization", utf8(), true, meta("Default organization slug for functions called without organization :=.")),
+      field(
+        "region",
+        utf8(),
+        true,
+        meta("Data-residency region of a sentry.io organization: us or de (used when BASE_URL is not set)."),
+      ),
+      field(
+        "organization",
+        utf8(),
+        true,
+        meta("Default organization slug for functions called without organization :=."),
+      ),
     ],
     new Map([["vgi_doc_url", "https://docs.sentry.io/account/auth-tokens/"]]),
   ),
