@@ -432,7 +432,8 @@ export const metricAlertIncidents = defineSentryTable<{ organization: string | n
     C.str("alert_rule_name", "Name of the metric alert rule.", "alertRule.name"),
     C.strList("projects", "Project slugs.", projectList),
     C.str("url", "Link to the incident in the Sentry web UI.", (r) => {
-      const base = r.__ctx?.base_url;
+      // Region API hosts (us.sentry.io / de.sentry.io) serve the UI from sentry.io.
+      const base = r.__ctx?.base_url?.replace(/^https:\/\/(us|de)\.sentry\.io$/, "https://sentry.io");
       const org = r.__ctx?.organization;
       const rule = at(r, "alertRule.id");
       return base && org && rule != null
