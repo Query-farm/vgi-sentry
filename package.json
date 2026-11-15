@@ -2,7 +2,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A VGI worker for DuckDB, generated from the Query.Farm VGI starter template.",
+  "description": "Sentry issues, events, Discover, releases, alerts, crons, replays and usage as SQL tables in DuckDB.",
   "license": "0BSD",
   "scripts": {
     "typecheck": "tsc --noEmit",

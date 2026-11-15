@@ -92,8 +92,11 @@ jobs:
           location: ${{ github.workspace }}/bin/vgi-sentry-worker
           # Set in vgi-lint.toml, so local runs and CI agree.
           fail-on: ${{ steps.lintcfg.outputs.fail_on }}
-          # Set to false if your examples need real credentials or network access.
-          execute: true
+          # Every function (sentry.main.issues, discover, releases, ...) and the organizations
+          # table needs a `sentry` secret (AUTH_TOKEN, an auth token for a live Sentry
+          # organization), which CI does not have. The SQL tests cover behaviour offline
+          # against the replay server in test/mock_api.
+          execute: "false"
 
   docker:
     name: Docker image smoke test

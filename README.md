@@ -1,38 +1,148 @@
-<!-- managed-by: vgi-starters (edit upstream in shared/README.md.tmpl, then run tools/render.py) -->
 <p align="center">
   <img src="https://query.farm/media-kit/products/vgi/vgi-logo.png" alt="Vector Gateway Interface (VGI)" width="320">
 </p>
 
-<p align="center"><em>A Query.Farm VGI worker for DuckDB, written in TypeScript.</em></p>
+<p align="center"><em>A Query.Farm VGI worker for DuckDB.</em></p>
 
-# VGI Sentry Worker — TypeScript
+# Query Sentry Issues, Events, Discover, Releases and Crons in DuckDB
 
-[![CI](https://github.com/your-org/vgi-sentry/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/vgi-sentry/actions/workflows/ci.yml)
+> **vgi-sentry** · a [Query.Farm](https://query.farm) VGI worker · written in TypeScript
+
+[![CI](https://github.com/Query-farm/vgi-sentry/actions/workflows/ci.yml/badge.svg)](https://github.com/Query-farm/vgi-sentry/actions/workflows/ci.yml)
 [![vgi worker: query.farm](https://query.farm/media-kit/shields/vgi-worker.svg)](https://query.farm)
 
-[VGI](https://query.farm/vgi) lets DuckDB call functions that live in a separate
-process: your code, in any language, exposed as ordinary SQL. This worker adds
-three example functions that you rename and replace with your own:
+[Sentry](https://sentry.io) error and performance monitoring as SQL, read-only, through the
+[Sentry REST API](https://docs.sentry.io/api/) — sentry.io (US or EU data residency) or a
+self-hosted Sentry. Triage issues with SQL filters that become Sentry issue search, look
+inside their events and tag distributions, run Discover queries over errors, transactions
+and spans, see what shipped and whether it is stable, audit alerting and cron jobs, and
+watch how much volume is accepted or dropped.
 
-| Function | Kind | Shows you how to |
-|---|---|---|
-| `greet(name)` / `greet(name, style)` | scalar | vectorize over a column, overload, constrain a constant |
-| `sequence_table(count, step := 1)` | table | stream rows in batches, take named arguments |
-| `fetch_items(base_url, page_size := 100)` | table | page through a REST API, retry, read a secret |
+```sql
+CREATE SECRET sentry (TYPE sentry, AUTH_TOKEN 'sntrys_…', ORGANIZATION 'acme');
 
+-- Top unresolved production errors (status and level become `is:unresolved level:[error,fatal]`).
+SELECT short_id, title, event_count, user_count, last_seen, assignee
+FROM sentry.main.issues(environment := 'production')
+WHERE status = 'unresolved' AND level IN ('error', 'fatal')
+ORDER BY event_count DESC LIMIT 10;
 
-## Quick start
+-- Busiest transactions and their p95 latency over the last day.
+SELECT transaction, count, p95_transaction_duration
+FROM sentry.main.discover('transactions', ['transaction', 'count()', 'p95(transaction.duration)'],
+                          sort := '-count()', stats_period := '24h')
+ORDER BY count DESC LIMIT 10;
 
-**Prerequisites:** [Bun](https://bun.sh) 1.3+ and [uv](https://docs.astral.sh/uv/) (it runs the SQL
-test runner and the metadata checker).
-
-```bash
-make build
+-- New issues per release, next to its crash-free session rate.
+SELECT r.version, r.new_issues, h.crash_free_sessions, d.finished_at AS deployed_to_prod
+FROM sentry.main.releases() r
+JOIN sentry.main.release_health() h USING (version)
+LEFT JOIN sentry.main.release_deploys() d ON d.version = r.version AND d.environment = 'production'
+ORDER BY r.created_at DESC;
 ```
 
-Then open DuckDB 2.0 or [Haybarn](https://query.farm/products/haybarn) and attach the
-worker. `LOCATION` is the command DuckDB runs to start it; use an absolute path,
-because a relative one resolves against DuckDB's working directory.
+## Functions and tables
+
+All live in `sentry.main`. Every function takes an optional `organization :=` (or a pushed
+`WHERE organization = …`); without one it uses the secret's `ORGANIZATION`, and without that
+every organization the token can see. Everything pushed down is re-applied exactly by the
+SDK, so pushdown only ever narrows what crosses the network.
+
+| Object | Sentry endpoint | What pushes down |
+|---|---|---|
+| `organizations` (table) | `GET /api/0/organizations/` | — |
+| `projects()` | `GET /organizations/{org}/projects/` | `organization` |
+| `teams()` | `GET /organizations/{org}/teams/` | `slug =` → `query=slug:` |
+| `members()` | `GET /organizations/{org}/members/` | `role`, `pending`, `has_2fa` (=) → `query=role: isInvited: has2fa:` |
+| `environments(visibility := 'visible')` | `GET /organizations/{org}/environments/` | — |
+| `issues(project, environment, query, tags, sort := 'date', stats_period, start_time, end_time, page_size)` | `GET /organizations/{org}/issues/` | `status` / `substatus` = → `is:`; `level`, `priority`, `issue_category` (=, IN, !=, NOT IN) → `level:[…]`, `issue.priority:`, `issue.category:` (`!` to negate); `assignee IS NULL / NOT NULL` → `is:unassigned / is:assigned`; `assignee_type = 'team' AND assignee = 'x'` → `assigned:#x`; `first_seen` / `last_seen` ranges → `firstSeen:>= lastSeen:<=`; `event_count >=` → `timesSeen:>=`; `project_slug` (=, IN) → `project:`; `is_bookmarked` → `is:bookmarked`; `tags := ['key:value']` → quoted tag terms |
+| `issue_events(issue_id, which := 'all', environment, query, …window)` | `…/issues/{id}/events/` (`full=true`) or `…/events/{latest,oldest,recommended}/` | `issue_id` (=, IN); `environment` =; `release` = → `query=release:`; `created_at` range → `start` / `end` |
+| `issue_tags(issue_id, environment)` | `…/issues/{id}/tags/` | `issue_id`; `key` (=, IN) → `key=` |
+| `issue_tag_values(issue_id, key, environment, sort := '-count')` | `…/issues/{id}/tags/{key}/values/` | `issue_id`, `key` |
+| `discover(dataset, fields, query, sort, project_id, environment, …window)` | `GET /organizations/{org}/events/` | projection → `field` list; string fields (=, IN, !=) → `field:value`; aggregates and numeric fields (`<`, `<=`, `>`, `>=`) → `count():>=n`; `timestamp` range → `start` / `end` |
+| `releases(project_id, environment, query, sort := 'date', status)` | `GET /organizations/{org}/releases/` | `version =` → `query=`; `project_id`, `status` = |
+| `release_health(…same)` | `…/releases/?health=1` | same; one row per release × project |
+| `release_deploys(version)` | `…/releases/{version}/deploys/` | `version` (=, IN); otherwise every open release |
+| `release_commits(version)` | `…/releases/{version}/commits/` | `version` (=, IN) |
+| `issue_alert_rules(project_slug)` | `GET /projects/{org}/{project}/rules/` | `project_slug` (=, IN) |
+| `metric_alert_rules()` | `GET /organizations/{org}/alert-rules/` | — |
+| `metric_alert_incidents()` | `GET /organizations/{org}/incidents/` | `status = 'triggered' / 'resolved'` → `status=open / closed` |
+| `monitors(environment)` | `GET /organizations/{org}/monitors/` | `project_id` = |
+| `monitor_checkins(monitor_slug, environment, …window)` | `…/monitors/{slug}/checkins/` | `monitor_slug` (=, IN); `environment` =; `created_at` range → `start` / `end` |
+| `replays(project_id, environment, query, sort, …window)` | `GET /organizations/{org}/replays/` (metadata `field`s only) | `browser_name`, `os_name`, `platform` → `browser.name:` …; `error_count`, `rage_click_count`, `dead_click_count` `>=` → `count_errors:>=n` …; `started_at` range → `start` / `end` |
+| `user_feedback(project_slug, include_pii := false)` | `GET /projects/{org}/{project}/user-feedback/` | `project_slug` (=, IN) |
+| `audit_log()` | `GET /organizations/{org}/audit-logs/` | `event` = → `event=`; `actor_id` = → `actor=` |
+| `usage_stats(interval := '1d', …window)` | `GET /organizations/{org}/stats_v2/` (`sum(quantity)` by outcome, category, reason, project) | `category`, `outcome` (=, IN), `reason` =, `project_id` (=, IN) |
+
+Notes:
+
+- **Windows.** `issues`, `issue_events`, `monitor_checkins` and `replays` default to the last
+  90 days, `discover` to 14 days and `usage_stats` to 30 days; pass `stats_period := '24h'`
+  or `start_time := … , end_time := …`. Unlike the Sentry UI, `issues()` applies no default
+  `is:unresolved`: without a status filter you get every status.
+- **Discover columns** are the requested fields, lower-cased with non-alphanumerics turned
+  into `_` (`count()` → `count`, `p95(transaction.duration)` → `p95_transaction_duration`).
+  Count-like aggregates are `BIGINT`, other aggregates and durations `DOUBLE`, `timestamp`
+  `TIMESTAMPTZ`, everything else `VARCHAR`. When the query has aggregates, unprojected
+  aggregates are dropped from the request but grouping fields never are (that would change
+  the grouping).
+- **Search quoting.** Values with spaces, quotes, colons, brackets or a leading `!` are
+  double-quoted with `\"` / `\\` escapes, so `tags := ['server_name:web 2']` becomes
+  `server_name:"web 2"`. A `*` inside a value is a Sentry wildcard (the SDK re-checks the
+  exact value).
+- **PII.** Replays expose `user_id` only (no email, IP or name). `user_feedback` returns the
+  reporter's name and email only with `include_pii := true`; its comments are free text and
+  may contain personal data. Member emails appear as Sentry returns them to the token.
+- **Feature detection.** `audit_log()` fails with *audit logs are not available for
+  organization …* when the plan or token scope lacks the feature, instead of returning zero
+  rows.
+
+### Shared vocabularies
+
+`issues()` and `metric_alert_incidents()` use the incident vocabulary of the PagerDuty worker
+where it fits — `title`, `status` / `incident_status` (`triggered`, `acknowledged`,
+`resolved`), `created_at` (= `first_seen`), `resolved_at`, `time_to_resolve_seconds`,
+`assignee`, `url` — so they `UNION ALL` with other incident sources. `release_deploys()`
+follows the web-deploy vocabulary of the Vercel / Netlify workers: `environment`,
+`created_at`, `url`.
+
+## Authentication
+
+Create one `sentry` secret with an **auth token**: an organization token (`sntrys_…`,
+*Settings → Developer Settings → Organization Tokens*), a user token (`sntryu_…`) or an
+internal integration token, with read scopes (`org:read`, `project:read`, `event:read`,
+`member:read`, `team:read`, `alerts:read`).
+
+```sql
+CREATE SECRET sentry (TYPE sentry, AUTH_TOKEN 'sntrys_…');                              -- sentry.io
+CREATE SECRET sentry_eu (TYPE sentry, AUTH_TOKEN 'sntrys_…', REGION 'de');              -- https://de.sentry.io
+CREATE SECRET sentry_self (TYPE sentry, AUTH_TOKEN '…', BASE_URL 'https://sentry.example.com');
+CREATE SECRET sentry_acme (TYPE sentry, AUTH_TOKEN 'sntrys_…', ORGANIZATION 'acme');    -- default organization
+```
+
+`AUTH_TOKEN` is a redacted secret field sent as `Authorization: Bearer …`. It is read from
+the secret on every call and never stored in scan state, so it never travels in HTTP
+continuation tokens, and it is never sent to an origin other than the configured host
+(`https://` only, except `http://127.0.0.1` / `localhost` for local test servers).
+
+## Paging and rate limits
+
+Each Sentry page becomes one Arrow batch. Sentry pages with a `Link` header
+(`rel="next"; results="true"; cursor="…"`); the cursor — plus the resolved organizations,
+projects, issues or releases and the current position — lives in the table function's
+serializable state, so long scans resume on any worker process over the HTTP transport.
+`X-Sentry-Rate-Limit-Remaining` / `-Reset` (epoch seconds) are tracked: a 429 waits for
+`Retry-After` (or the reset, up to 65 s), the worker pauses on its own when the window is
+about to run dry, and 5xx and network errors retry with exponential backoff.
+
+## Install
+
+**Prerequisites:** [Bun](https://bun.sh) 1.3+ (for a source checkout).
+
+```bash
+git clone --branch v0.1.0 https://github.com/Query-farm/vgi-sentry.git && cd vgi-sentry
+bun install --frozen-lockfile
+```
 
 **DuckDB 2.0:**
 
@@ -52,244 +162,37 @@ LOAD vgi;
 ATTACH 'sentry' (TYPE vgi, LOCATION '/abs/path/to/vgi-sentry/bin/vgi-sentry-worker');
 ```
 
-Now call the functions:
-
-```sql
-SELECT sentry.main.greet('Ada');                         -- Hi, Ada!
-SELECT sentry.main.greet('Ada', 'formal');               -- Good day, Ada.
-SELECT * FROM sentry.main.sequence_table(5, step := 2) ORDER BY n;
-```
-
-`fetch_items` pages through a REST API. Try it against the public demo API (25 fixed items):
-
-```sql
-SELECT category, count(*) AS items, round(avg(price), 2) AS avg_price
-FROM sentry.main.fetch_items('https://vgi-starter-api.query-farm.services/v1')
-GROUP BY category ORDER BY category;
-```
-
-If an older cached extension misbehaves, refresh it with `FORCE INSTALL vgi FROM query_farm;`
-(DuckDB) or `FORCE INSTALL vgi FROM community;` (Haybarn).
-
-## Using it in a pipeline
-
-Worker functions compose with everything else in DuckDB:
-
-```sql
--- Materialize an API into a local table.
-CREATE TABLE items AS SELECT * FROM sentry.main.fetch_items('https://vgi-starter-api.query-farm.services/v1');
-
--- Join it with local files.
-SELECT i.name, i.price, s.units
-FROM items i JOIN 'sales.parquet' s ON s.item_id = i.id;
-
--- Call a scalar per row of another table.
-SELECT customer, sentry.main.greet(customer, 'formal') FROM read_csv('customers.csv');
-```
-
-## Project layout
-
-```
-src/
-  worker.ts        # entry point: serves the catalog over stdio, --unix or --http
-  catalog.ts       # assembles the catalog; add new functions to FUNCTIONS
-  meta.ts          # catalog/schema metadata + helpers (objectTags, column)
-  greet.ts         # scalar example (overloads, const param with choices)
-  sequence.ts      # table function example (named args, streaming state)
-  fetch_items.ts   # REST API table function (pagination, retries, secrets)
-  cli.ts           # flag parsing: stdio / --unix / --http (PORT:<n>, /health)
-  log.ts           # stderr logger
-bin/               # vgi-sentry-worker (what DuckDB launches) and run-recipe
-tests/             # bun unit tests (worker subprocess + mock API)
-test/sql/          # sqllogictest files run through DuckDB
-test/mock_api/     # offline mock of the REST API used by tests
-examples/          # recipes: pushdown, caching, catalog tables, aggregates, COPY …
-ci/                # integration harness used by `make test-sql` and CI
-scripts/           # vgi_template.py (init / template-diff)
-vgi-agent-tests.yaml  # private graders for the agent test tasks
-```
-
-## Adding a function
-
-1. Create `src/<name>.ts`. Copy the closest example: `greet.ts` for a scalar,
-   `sequence.ts` for a generator, `fetch_items.ts` for an API.
-2. Declare arguments: `params` + `argDocs` (scalars), or the ordered `parameters`
-   list when a constant needs `choices`/`ge`/`le`. Table functions use `args`,
-   `argDocs` and `argConstraints`; an argument listed in `argDefaults` becomes a
-   named argument (`step := 2`), the others are positional.
-3. Give it `description`, `tags: objectTags(...)` (from `src/meta.ts`) and
-   `examples`.
-4. Add it to `FUNCTIONS` in `src/catalog.ts`.
-
-**Which kind of function?**
-
-| You want to… | Use |
-|---|---|
-| compute one value per input row | a **scalar** function |
-| return a set of rows from arguments (an API, a file, a generator) | a **table** function |
-| transform or aggregate the rows of a query | a **table in-out** function or an **aggregate** |
-| expose a fixed dataset by name (`SELECT * FROM sentry.main.t`) | a **catalog table** |
-| write data out to a file or service | `COPY … TO` with a copy function |
-| accept `INSERT` / `UPDATE` / `DELETE` | a catalog table with insert/update/delete functions |
-
-The [examples/](examples/) folder has a recipe for most of these. Writable tables have no
-recipe:
-
-A writable table is a `TableDescriptor` that names a table in-out function per operation in
-`insertFunction`, `updateFunction` and `deleteFunction`, with the richest result each one
-produces in `writeResultModes`. `writeOptions`, `writeResultSchema`, `writeResultBatch` and
-`rowIdField` (all exported by `@query-farm/vgi`) read DuckDB's `write_options` argument and
-build the result. UPDATE and DELETE need the table's scan `function` to emit `rowIdField()` and
-support projection pushdown. Transactions: return `supports_transactions` from the catalog's
-attach and override `transactionBegin` / `transactionCommit` / `transactionRollback`.
-Since VGI protocol 3.3 a table's scan and write functions are table-only: hidden from
-`duckdb_functions()` and not callable from SQL. Set `exposeScan: true` on the table to keep the
-scan callable as an ordinary table function too (write functions never are).
-[`examples/simple-writable-worker.ts`](https://github.com/Query-farm/vgi-typescript/blob/main/examples/simple-writable-worker.ts)
-and `examples/writable-tx-worker.ts` in vgi-typescript are complete workers.
-
-## Secrets and configuration
-
-`fetch_items` shows the recommended pattern. A bearer token comes from a DuckDB secret
-when one exists, and from an environment variable otherwise:
-
-```sql
-CREATE SECRET (TYPE sentry_api, TOKEN 'your-token');      -- per session, never logged
-```
-
-```bash
-SENTRY_API_TOKEN=your-token make run-http                # for servers and containers
-```
-
-Try it: the demo API's `/v1/auth` endpoint needs the published token `demo-token`.
-
-```sql
-SELECT count(*) FROM sentry.main.fetch_items('https://vgi-starter-api.query-farm.services/v1/auth');   -- fails: HTTP 401
-CREATE SECRET (TYPE sentry_api, TOKEN 'demo-token');
-SELECT count(*) FROM sentry.main.fetch_items('https://vgi-starter-api.query-farm.services/v1/auth');   -- 25
-```
-
-Never bake credentials into the image or the source. If a function can't run without
-real credentials, its examples can't execute in CI either. Set `execute: false` on the
-metadata check for that worker (see `.github/workflows/ci.yml`), and add
-`LINT_ARGS ?= --no-execute` to the Makefile so local runs match.
+`LOCATION` is the command DuckDB runs, so use an absolute path. Tagged releases ship signed
+standalone executables (no Bun needed) for Linux, macOS (arm64) and Windows; point
+`LOCATION` at the downloaded binary. The same binary serves HTTP with `--http --port 8000`
+(see the `Dockerfile`).
 
 ## Testing
 
 ```bash
-make test-unit                 # fast TypeScript unit tests
-make test-sql                  # test/sql/*.test through DuckDB (stdio)
+make test-unit                 # bun unit tests (search quoting, Link paging, backoff, discover naming)
+make test-sql                  # test/sql/sentry.test through Haybarn 2.0 (stdio)
 make test-sql TRANSPORT=http   # …over HTTP (also: launch)
 make check                     # everything CI runs
 ```
 
-`test/sql/*.test` files are [sqllogictest](https://duckdb.org/docs/stable/dev/sqllogictest/intro)
-scripts. `ci/run-integration.sh` runs them against your worker and fails on any
-unexpected skip, so a broken transport can't hide behind a green run.
-`fetch_items` is tested against `test/mock_api/server.py` so tests are fast and
-offline.
+No test touches the network or a real Sentry account. `test/mock_api/server.py` is a
+stdlib-only, strict replay server over two hand-built organizations
+(`test/mock_api/fixtures.py`, in Sentry's documented response shapes). It checks the bearer
+token, rejects unknown or repeated query parameters and bad sort / dataset / field /
+interval values, parses Sentry search syntax (`test/mock_api/search.py`: quoting, lists,
+negation, comparisons, wildcards, Discover having-conditions) and evaluates it against the
+fixtures, so pushdown really narrows the data. It serves at most three rows per page with a
+Sentry `Link` header, evaluates relative windows against a fixed clock, answers a 429 and a
+503 once each so the retry paths always run, and keeps a `/__requests` log the SQL tests
+read to check exactly what was pushed down.
 
-**Testing against real data:** put live tests in their own `.test` file that starts with
-`require-env SENTRY_LIVE`. They run only when that variable is set. Add the skip reason
-to `EXPECTED_SKIP_REASONS` in CI.
+The metadata check runs with `execute: false` in CI: every object needs a `sentry` secret
+for a live Sentry organization.
 
-## Metadata and the quality score
+## Authorship & License
 
-DuckDB, agents and documentation tools discover your functions through their metadata:
-titles, descriptions, argument docs, examples and keywords.
-[vgi-lint](https://github.com/Query-farm/vgi-lint-check) checks it, and CI runs it on
-every push. Its settings live in `vgi-lint.toml`, which `make lint-explain`,
-`vgi-lint lint`, and CI all read. This template scores 100/100 with no findings.
+Written by [Query.Farm](https://query.farm). Released under the
+[BSD Zero Clause License](LICENSE) (0BSD).
 
-```bash
-make lint-explain                              # findings, each with its fix
-make lint-explain LINT_ARGS="--format agent"   # the same, grouped for coding agents
-make lint-ai                                   # optional: an agent must solve vgi-agent-tests.yaml
-```
-
-Each report also states an **assurance level**: how much was actually verified.
-
-| Level | Reached when | Here |
-|---|---|---|
-| L1 structural | the static metadata is clean | workers that need real credentials (`execute: false` in CI) |
-| L2 behavioural | the examples also run and return what they claim | **the CI gate** |
-| L3 semantic | an agent solves the worker's own test tasks, and the docs are reviewed | `make lint-ai`, before publishing |
-
-- **How strict.** Your copy fails on warnings (`fail_on = "warning"` in `vgi-lint.toml`).
-  Raise it to `"info"` before you publish the worker for others.
-- **The linter isn't pinned.** It tracks the current quality bar, so a new rule can flag
-  metadata that passed yesterday. Fix it, or waive the finding.
-- **Waivers.** If a finding is genuinely wrong for your worker, waive it in
-  `vgi-lint.toml` with a `kind` and a `reason`.
-- **Existing workers.** If you're adding this gate to a worker that already has
-  findings, record them with `vgi-lint lint --baseline vgi-lint-baseline --update-baseline`
-  and set `baseline` in `vgi-lint.toml`. After that, only new findings fail.
-
-Metadata lives in `src/meta.ts` and the `tags`/`examples` of each function.
-
-## Logging and debugging
-
-stdout carries the Arrow protocol, so **never print to stdout**. Log to stderr instead.
-Use `log` from `src/log.ts` (it writes to stderr); `--debug` or `--log-level debug` turns it up and also enables the SDK's own tracing (`VGI_DEBUG`).
-
-- Under DuckDB (stdio/launch), worker stderr shows up in DuckDB's error messages and
-  terminal.
-- In Docker it goes to `docker logs`.
-- `make debug` runs one query against the worker with debug logging on.
-
-## Deploying
-
-The same binary serves stdio (DuckDB starts it locally) or HTTP (you host it):
-
-```bash
-docker build -t weather-worker .
-docker run -p 8000:8000 -e SENTRY_API_TOKEN=... weather-worker   # health: GET /health
-```
-
-```sql
-ATTACH 'sentry' (TYPE vgi, LOCATION 'https://workers.example.com/sentry');
-```
-
-Put hosted workers behind TLS and authentication. See
-[authentication](https://query.farm/vgi/authentication) for bearer tokens and JWTs, and
-[distributing a worker](https://query.farm/vgi/distributing-a-worker) for packaging.
-Pass secrets with `-e` or your platform's secret manager.
-
-## Releasing
-
-Push a tag like `v0.1.0`. The release workflow compiles the worker with `bun build --compile` into a standalone executable for Linux (x86-64, arm64), macOS (arm64) and Windows (x86-64), and attaches the archives to the GitHub release. Users download one file and point `LOCATION` at it, with no Bun or `node_modules` on the host. Every artifact is signed with cosign and
-carries SLSA build provenance. `ci/check-version.sh` makes sure the tag matches the
-version in `package.json`.
-
-## Using with coding agents
-
-[AGENTS.md](AGENTS.md) is written for AI coding agents (Claude Code reads it via
-`CLAUDE.md`; Codex, Cursor and others read it directly). It covers the commands, the
-recipe for adding a function, the metadata checklist and the sharp edges. A good first
-prompt:
-
-> Read AGENTS.md. Replace `fetch_items` with `forecast(lat DOUBLE, lon DOUBLE)` that calls
-> the Open-Meteo API. Include full metadata, a mock-server test and a `SENTRY_LIVE` test.
-> You're done when `make check` passes.
-
-## Keeping up with the template
-
-`make template-diff` shows what changed upstream (CI, docs, examples) since your copy was
-made. Your copy records its template version in `.vgi-sentry.json`.
-
-## Learn more
-
-- [What is VGI?](https://query.farm/vgi) · [Getting started](https://query.farm/vgi/getting-started) · [Building a worker](https://query.farm/vgi/building-a-worker)
-- [TypeScript SDK docs](https://query.farm/vgi/docs/typescript/): [scalar tutorial](https://query.farm/vgi/docs/typescript/tutorial/scalar/), [table tutorial](https://query.farm/vgi/docs/typescript/tutorial/table/)
-- [Distributing a worker](https://query.farm/vgi/distributing-a-worker) · [Choosing a language](https://query.farm/vgi/languages) · [llms.txt](https://query.farm/vgi/llms.txt)
-- SDK source: [@query-farm/vgi](https://github.com/Query-farm/vgi-typescript) · RPC layer: [https://vgi-rpc-typescript.query.farm](https://vgi-rpc-typescript.query.farm)
-
-## Support
-
-Open an issue on this repository. For VGI itself, see [query.farm](https://query.farm).
-
-## Authorship & license
-
-The starter template is written by [Query.Farm](https://query.farm) and released under
-the [BSD Zero Clause License](LICENSE) (0BSD). Use it for anything, with no attribution
-required. Replace this section with your own license once the code is yours.
+Copyright 2026 Query Farm LLC - https://query.farm
