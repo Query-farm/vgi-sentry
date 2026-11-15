@@ -240,6 +240,9 @@ export const discover = defineTableFunction<DiscoverArgs, DiscoverState>({
     end_time: null,
   },
   argConstraints: { dataset: { choices: DATASETS }, ...WINDOW_CONSTRAINTS } as never,
+  // DuckDB tells the worker which columns the query uses, so the field list sent to
+  // Sentry can shrink (see projectFields for when that is safe).
+  projectionPushdown: true,
   filterPushdown: true,
   autoApplyFilters: true,
   onBind: (params) => {

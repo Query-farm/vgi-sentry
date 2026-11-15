@@ -640,7 +640,9 @@ def r_stats(org, p: Params):
     if interval not in ("1h", "1d"):
         raise bad("interval must be 1h or 1d")
     start, end = window(p, "14d")
-    day0 = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    day0 = start.replace(minute=0, second=0, microsecond=0)
+    if interval == "1d":
+        day0 = day0.replace(hour=0)
     step = dt.timedelta(days=1) if interval == "1d" else dt.timedelta(hours=1)
     intervals = []
     t = day0
@@ -725,7 +727,7 @@ class Handler(BaseHTTPRequestHandler):
                         ONCE.add(once_path)
                     if first:
                         if status == 429:
-                            raise ApiError(429, "You are attempting to use this endpoint too frequently. Limit is 40 requests in 1 seconds", {"Retry-After": "1", "X-Sentry-Rate-Limit-Remaining": "0"})
+                            raise ApiError(429, "You are attempting to use this endpoint too frequently. Limit is 40 requests in 1 seconds", {"Retry-After": "1", "X-Sentry-Rate-Limit-Remaining": "0", "X-Sentry-Rate-Limit-Reset": str(int(time.time()) + 1)})
                         raise ApiError(503, "Service unavailable")
             body = route(self, u.path, qs)
             self.send_json(200, body)

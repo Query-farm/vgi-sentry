@@ -1,148 +1,722 @@
 # name: test/sql/sentry.test
-# description: SQL-level tests for the sentry worker, run through DuckDB by ci/run-integration.sh
+# description: SQL tests for the sentry worker against the strict Sentry replay server (test/mock_api/server.py)
 # group: [sentry]
-# managed-by: vgi-starters (edit upstream in shared/, then run tools/render.py)
 
 require vgi
 
 require-env SENTRY_WORKER
 
-require-env SENTRY_MOCK_API
+require-env SENTRY_FIXTURE_URL
 
-require-env SENTRY_MOCK_API_AUTH
+# httpfs + json read the replay server's /__requests log to assert what was pushed down.
+statement ok
+LOAD httpfs;
+
+statement ok
+LOAD json;
 
 statement ok
 ATTACH 'sentry' (TYPE vgi, LOCATION '{SENTRY_WORKER}');
 
-# ---------------------------------------------------------------- greet (scalar)
+# ---------------------------------------------------------------- secret errors
 
-query T
-SELECT sentry.main.greet('Ada');
-----
-Hi, Ada!
-
-query T
-SELECT sentry.main.greet('Ada', 'formal');
-----
-Good day, Ada.
-
-# NULL in, NULL out.
-query T
-SELECT sentry.main.greet(NULL);
-----
-NULL
-
-# Works over a whole column, one result per row.
-query T
-SELECT sentry.main.greet(name) FROM (VALUES ('Ada'), ('Grace'), (NULL)) AS t(name) ORDER BY ALL NULLS LAST;
-----
-Hi, Ada!
-Hi, Grace!
-NULL
-
-# `style` is constrained to 'casual' | 'formal' and checked when the query is bound.
-# (No expected message: each SDK words constraint errors its own way.)
 statement error
-SELECT sentry.main.greet('Ada', 'loud');
+SELECT count(*) FROM sentry.main.organizations;
 ----
-<REGEX>:.*
+<REGEX>:.*no sentry secret.*
 
-# ------------------------------------------------------ sequence_table (table fn)
+statement ok
+CREATE SECRET sentry_bad (TYPE sentry, AUTH_TOKEN 'sntrys_wrong', BASE_URL '{SENTRY_FIXTURE_URL}');
 
-query II
-SELECT n, squared FROM sentry.main.sequence_table(4) ORDER BY n;
+statement error
+SELECT count(*) FROM sentry.main.organizations;
 ----
-0	0
-1	1
-2	4
-3	9
+<REGEX>:.*HTTP 401.*Invalid token.*
 
-# Named argument with a default.
+statement ok
+DROP SECRET sentry_bad;
+
+statement ok
+CREATE SECRET sentry_insecure (TYPE sentry, AUTH_TOKEN 'sntrys_x', BASE_URL 'http://sentry.example.com');
+
+statement error
+SELECT count(*) FROM sentry.main.organizations;
+----
+<REGEX>:.*https.*
+
+statement ok
+DROP SECRET sentry_insecure;
+
+statement ok
+CREATE SECRET sentry_region (TYPE sentry, AUTH_TOKEN 'sntrys_x', REGION 'eu');
+
+statement error
+SELECT count(*) FROM sentry.main.organizations;
+----
+<REGEX>:.*region 'eu' is not one of us, de.*
+
+statement ok
+DROP SECRET sentry_region;
+
+# The token goes out as a Bearer header; the bad-token request was recorded as auth=bad.
 query I
-SELECT n FROM sentry.main.sequence_table(3, step := 5) ORDER BY n;
+SELECT count(*) > 0 FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/') WHERE auth = 'bad';
+----
+true
+
+# --------------------------------------------------- every organization (no default)
+
+statement ok
+CREATE SECRET sentry_all (TYPE sentry, AUTH_TOKEN 'sntrys_test_token', BASE_URL '{SENTRY_FIXTURE_URL}');
+
+query TTTT
+SELECT slug, name, status, region_url FROM sentry.main.organizations ORDER BY slug;
+----
+acme	Acme Corp	active	https://us.sentry.io
+globex	Globex	active	https://de.sentry.io
+
+query TT
+SELECT slug, created_at FROM sentry.main.organizations WHERE require_2fa;
+----
+acme	2023-03-01 09:00:00+00
+
+# Without organization := every organization is read.
+query TTT
+SELECT organization, slug, teams FROM sentry.main.projects() ORDER BY ALL;
+----
+acme	backend	[platform]
+acme	frontend	[web]
+acme	mobile	[mobile]
+globex	web	[core]
+
+# A pushed organization filter reads only that organization.
+query T
+SELECT slug FROM sentry.main.projects() WHERE organization = 'globex';
+----
+web
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/globex/projects/');
+----
+2
+
+statement ok
+DROP SECRET sentry_all;
+
+# ------------------------------------------------------------ default organization
+
+statement ok
+CREATE SECRET sentry (TYPE sentry, AUTH_TOKEN 'sntrys_test_token', BASE_URL '{SENTRY_FIXTURE_URL}', ORGANIZATION 'acme');
+
+query TTT
+SELECT slug, platform, has_replays FROM sentry.main.projects() ORDER BY slug;
+----
+backend	python-django	false
+frontend	javascript-react	true
+mobile	android	false
+
+# Teams: the first request answers 503 and is retried; `slug =` → query=slug:.
+query TIT
+SELECT slug, member_count, projects FROM sentry.main.teams() ORDER BY slug;
+----
+mobile	2	[mobile]
+platform	4	[backend]
+web	3	[frontend]
+
+query T
+SELECT slug FROM sentry.main.teams() WHERE slug = 'web';
+----
+web
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/teams/') WHERE query LIKE '%"query": "slug:web"%';
+----
+1
+
+# Members: role / pending / has_2fa push down as member search.
+query TTTT
+SELECT name, role, has_2fa, team_roles FROM sentry.main.members() WHERE role = 'admin';
+----
+Raj Patel	admin	true	[{'team': platform, 'role': contributor}, {'team': web, 'role': admin}]
+
+query T
+SELECT email FROM sentry.main.members() WHERE NOT has_2fa AND NOT pending;
+----
+li@acme.example
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/members/') WHERE query LIKE '%isInvited:false%' AND query LIKE '%has2fa:false%';
+----
+1
+
+query I
+SELECT count(*) FROM sentry.main.members() WHERE pending AND user_id IS NULL;
+----
+1
+
+query T
+SELECT name FROM sentry.main.environments() ORDER BY name;
+----
+production
+staging
+
+query T
+SELECT name FROM sentry.main.environments(visibility := 'hidden');
+----
+dev-local
+
+statement error
+SELECT name FROM sentry.main.environments(visibility := 'secret');
+----
+<REGEX>:.*visibility.*
+
+# ------------------------------------------------------------------------ issues
+
+# Default window 90d: MOBILE-2 (last seen July) is outside it; every status is returned
+# because the worker always sends `query` (Sentry would otherwise default to is:unresolved).
+# The first issues request answers 429 and is retried.
+query TTTTIIT
+SELECT short_id, status, substatus, level, event_count, user_count, assignee FROM sentry.main.issues() ORDER BY short_id;
+----
+BACKEND-1	unresolved	regressed	error	845	120	Jane Doe
+BACKEND-2	unresolved	new	fatal	57	12	NULL
+BACKEND-3	unresolved	ongoing	warning	410	0	platform
+BACKEND-4	ignored	archived_forever	warning	12	3	NULL
+FRONTEND-1	unresolved	ongoing	error	1204	311	web
+FRONTEND-2	resolved	NULL	error	77	40	NULL
+MOBILE-1	unresolved	escalating	fatal	3021	980	NULL
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/') WHERE query = '{"limit": "100", "query": "", "sort": "date", "statsPeriod": "90d"}';
+----
+2
+
+# Incident vocabulary columns.
+query TTTTT
+SELECT short_id, incident_status, created_at = first_seen, url, issue_category FROM sentry.main.issues() WHERE short_id IN ('FRONTEND-1', 'BACKEND-4', 'FRONTEND-2', 'BACKEND-3') ORDER BY short_id;
+----
+BACKEND-3	triggered	true	https://acme.sentry.io/issues/4504005/	performance
+BACKEND-4	acknowledged	true	https://acme.sentry.io/issues/4504007/	error
+FRONTEND-1	triggered	true	https://acme.sentry.io/issues/4504001/	error
+FRONTEND-2	resolved	true	https://acme.sentry.io/issues/4504006/	error
+
+# status / level push down as is: / level:[...]; Sentry returns pages of 3 and the
+# Link cursor is followed.
+query TI
+SELECT short_id, event_count FROM sentry.main.issues() WHERE status = 'unresolved' AND level IN ('error', 'fatal') ORDER BY event_count DESC;
+----
+MOBILE-1	3021
+FRONTEND-1	1204
+BACKEND-1	845
+BACKEND-2	57
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/') WHERE query LIKE '%"query": "is:unresolved level:[error,fatal]"%';
+----
+2
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/') WHERE query LIKE '%"query": "is:unresolved level:[error,fatal]"%' AND query LIKE '%"cursor": "0:3:0"%';
+----
+1
+
+# != → !level:, priority → issue.priority:, first_seen range → firstSeen:>=.
+query T
+SELECT short_id FROM sentry.main.issues() WHERE level <> 'warning' AND priority = 'high' AND first_seen >= TIMESTAMPTZ '2026-10-01 00:00:00+00' ORDER BY short_id;
+----
+BACKEND-2
+FRONTEND-1
+MOBILE-1
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/') WHERE query LIKE '%!level:warning issue.priority:high firstSeen:>=2026-10-01T00:00:00Z%';
+----
+1
+
+# assignee IS NULL → is:unassigned; team assignment → assigned:#team; event_count → timesSeen.
+query T
+SELECT short_id FROM sentry.main.issues() WHERE assignee IS NULL ORDER BY short_id;
+----
+BACKEND-2
+BACKEND-4
+FRONTEND-2
+MOBILE-1
+
+query T
+SELECT short_id FROM sentry.main.issues() WHERE assignee_type = 'team' AND assignee = 'platform' AND event_count > 100;
+----
+BACKEND-3
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/') WHERE query LIKE '%is:unassigned%' OR query LIKE '%assigned:#platform timesSeen:>=101%';
+----
+3
+
+# last_seen upper bound and project_slug IN.
+query T
+SELECT short_id FROM sentry.main.issues() WHERE project_slug IN ('frontend', 'mobile') AND last_seen < TIMESTAMPTZ '2026-11-15 00:00:00+00';
+----
+FRONTEND-2
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/') WHERE query LIKE '%lastSeen:<=2026-11-15T00:00:00Z project:[frontend,mobile]%';
+----
+1
+
+# Tags with spaces are quoted; the raw query is ANDed.
+query T
+SELECT short_id FROM sentry.main.issues(tags := ['server_name:web 2'], query := 'KeyError');
+----
+BACKEND-1
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/') WHERE query LIKE '%"query": "server_name:\"web 2\" KeyError"%';
+----
+1
+
+# A value with a quote and a colon is escaped so Sentry's parser accepts it (strict 400 otherwise).
+query I
+SELECT count(*) FROM sentry.main.issues(tags := ['url:https://shop.acme.example/say "hi"']);
 ----
 0
-5
-10
 
-# Larger than one batch: the cursor must carry across process calls.
-query II
-SELECT count(*), max(n) FROM sentry.main.sequence_table(25000);
+query T
+SELECT short_id FROM sentry.main.issues(tags := ['url:https://shop.acme.example/checkout']);
 ----
-25000	24999
+FRONTEND-1
+
+statement error
+SELECT count(*) FROM sentry.main.issues(tags := ['no-colon']);
+----
+<REGEX>:.*key:value.*
+
+# A longer window brings back MOBILE-2; project / environment / sort are request parameters.
+query T
+SELECT short_id FROM sentry.main.issues(stats_period := '180d', project := 'mobile', sort := 'new') ORDER BY first_seen;
+----
+MOBILE-2
+MOBILE-1
+
+query T
+SELECT short_id FROM sentry.main.issues(environment := 'staging') ORDER BY 1;
+----
+BACKEND-4
+FRONTEND-1
+
+query T
+SELECT short_id FROM sentry.main.issues(start_time := TIMESTAMPTZ '2026-06-01 00:00:00+00', end_time := TIMESTAMPTZ '2026-07-15 00:00:00+00');
+----
+MOBILE-2
 
 query I
-SELECT count(*) FROM sentry.main.sequence_table(0);
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/') WHERE query LIKE '%"end": "2026-07-15T00:00:00.000Z"%' AND query LIKE '%"start": "2026-06-01T00:00:00.000Z"%' AND query NOT LIKE '%statsPeriod%';
 ----
-0
+1
 
-# count is constrained to [0, 1000000].
 statement error
-SELECT * FROM sentry.main.sequence_table(-1);
+SELECT count(*) FROM sentry.main.issues(stats_period := 'two weeks');
 ----
-<REGEX>:.*
+<REGEX>:.*stats_period.*
 
-# Named arguments are constrained too: step >= 1.
 statement error
-SELECT * FROM sentry.main.sequence_table(3, step := 0);
+SELECT count(*) FROM sentry.main.issues(sort := 'oldest');
 ----
-<REGEX>:.*
+<REGEX>:.*sort.*
 
-# ------------------------------------------------- fetch_items (REST table fn)
+# ------------------------------------------------------------------ issue events
 
-query IIT
-SELECT count(*), sum(id), min(name) FROM sentry.main.fetch_items('{SENTRY_MOCK_API}', page_size := 4);
+query TTTTTTT
+SELECT event_id, environment, release, exception_type, handled, top_in_app_frame, user_id FROM sentry.main.issue_events(issue_id := '4504001', which := 'latest');
 ----
-25	325	item-01
+a1f0000000000000000000000000e001	production	frontend@3.1.0	TypeError	false	renderItems (app/components/Cart.tsx:88)	u-1
+
+query TT
+SELECT event_id, top_in_app_frame FROM sentry.main.issue_events(issue_id := '4504002', which := 'oldest');
+----
+b2f0000000000000000000000000e102	validate (orders/serializers.py:23)
+
+# All events of an issue (5 → two pages); environment pushes down.
+query TTT
+SELECT release, count(*), min(created_at) FROM sentry.main.issue_events(issue_id := '4504001') WHERE environment = 'production' GROUP BY release ORDER BY release;
+----
+frontend@3.0.2	2	2026-10-20 08:00:00+00
+frontend@3.1.0	2	2026-11-15 09:00:00+00
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/4504001/events/') WHERE query LIKE '%"environment": "production"%' AND query LIKE '%"full": "true"%';
+----
+2
+
+# issue_id from a pushed IN filter; created_at range → start/end.
+query TI
+SELECT issue_id, count(*) FROM sentry.main.issue_events() WHERE issue_id IN ('4504001', '4504002') AND created_at >= TIMESTAMPTZ '2026-11-14 00:00:00+00' GROUP BY issue_id ORDER BY issue_id;
+----
+4504001	3
+4504002	1
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/4504002/events/') WHERE query LIKE '%"start": "2026-11-14T00:00:00.000Z"%';
+----
+1
+
+query T
+SELECT list_sort(list_transform(tags, lambda t: t.key)) FROM sentry.main.issue_events(issue_id := '4504001', which := 'recommended');
+----
+[browser, browser.name, environment, level, release]
+
+statement error
+SELECT count(*) FROM sentry.main.issue_events();
+----
+<REGEX>:.*issue_id is required.*
+
+statement error
+SELECT count(*) FROM sentry.main.issue_events(issue_id := '999');
+----
+<REGEX>:.*HTTP 404.*
+
+# -------------------------------------------------------------------- issue tags
+
+query TII
+SELECT key, total_values, len(top_values) FROM sentry.main.issue_tags(issue_id := '4504001') ORDER BY key;
+----
+browser	1204	3
+browser.name	1204	3
+environment	1204	2
+release	1204	2
+url	1204	1
 
 query TI
-SELECT category, count(*) FROM sentry.main.fetch_items('{SENTRY_MOCK_API}') GROUP BY category ORDER BY category;
+SELECT v.value, v.count FROM sentry.main.issue_tags(issue_id := '4504001') t, unnest(t.top_values) AS u(v) WHERE t.key = 'browser.name' ORDER BY v.count DESC;
 ----
-hardware	8
-service	8
-software	9
+Chrome	800
+Firefox	300
+Safari	104
 
-# The harness runs SENTRY_MOCK_API with MOCK_API_FLAKY=1: every page answers
-# 429 + Retry-After once, so every query above also exercised the retry path.
-
-# SENTRY_MOCK_API_AUTH requires a bearer token ('test-token'). Every language's
-# fetch_items must put the HTTP status code in its error message.
-statement error
-SELECT count(*) FROM sentry.main.fetch_items('{SENTRY_MOCK_API_AUTH}');
+query TI
+SELECT key, total_values FROM sentry.main.issue_tags(issue_id := '4504001') WHERE key = 'release';
 ----
-401
-
-statement ok
-CREATE SECRET sentry_api_test (TYPE sentry_api, TOKEN 'test-token');
+release	1204
 
 query I
-SELECT count(*) FROM sentry.main.fetch_items('{SENTRY_MOCK_API_AUTH}', page_size := 25);
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/4504001/tags/') WHERE query LIKE '%"key": "release"%';
 ----
-25
+1
 
-# Several pages: the token must survive between batches (over HTTP each batch is a
-# separate request, so a token kept only in memory is lost after page 1).
+query TIT
+SELECT value, count, last_seen FROM sentry.main.issue_tag_values(issue_id := '4504002', key := 'server_name') ORDER BY count DESC;
+----
+web 1	500	2026-11-14 22:00:00+00
+web 2	345	2026-11-14 20:00:00+00
+
+query TT
+SELECT key, value FROM sentry.main.issue_tag_values(issue_id := '4504001') WHERE key = 'release' ORDER BY value;
+----
+release	frontend@3.0.2
+release	frontend@3.1.0
+
+statement error
+SELECT count(*) FROM sentry.main.issue_tag_values(issue_id := '4504001');
+----
+<REGEX>:.*key is required.*
+
+# ---------------------------------------------------------------------- discover
+
+query TIR
+SELECT transaction, count, p95_transaction_duration FROM sentry.main.discover('transactions', ['transaction', 'count()', 'p95(transaction.duration)'], sort := '-count()') ORDER BY count DESC;
+----
+GET /api/orders	5	228.0
+POST /api/checkout	4	1336.4999999999995
+/checkout	3	1175.0
+
 query I
-SELECT count(*) FROM sentry.main.fetch_items('{SENTRY_MOCK_API_AUTH}', page_size := 7);
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/events/') WHERE query = '{"dataset": "transactions", "field": ["transaction", "count()", "p95(transaction.duration)"], "per_page": "100", "sort": "-count()", "statsPeriod": "14d"}';
 ----
-25
+1
 
-statement ok
-DROP SECRET sentry_api_test;
+# Aggregate filter → having-condition; unprojected aggregate dropped, grouping field kept.
+query TI
+SELECT error_type, count FROM sentry.main.discover('errors', ['error.type', 'count()', 'count_unique(user.id)']) WHERE count >= 3;
+----
+TypeError	4
 
-# base_url must be http(s).
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/events/') WHERE query = '{"dataset": "errors", "field": ["error.type", "count()"], "per_page": "100", "query": "count():>=3", "statsPeriod": "14d"}';
+----
+1
+
+# String filters → field:value; projection without aggregates requests only what is used.
+query TR
+SELECT transaction, transaction_duration FROM sentry.main.discover('transactions', ['id', 'transaction', 'transaction.duration', 'environment'], stats_period := '7d') WHERE environment = 'staging' AND transaction <> '/checkout' ORDER BY transaction_duration;
+----
+GET /api/orders	120.0
+GET /api/orders	180.0
+POST /api/checkout	300.0
+POST /api/checkout	1500.0
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/events/') WHERE query LIKE '%"field": ["transaction", "transaction.duration", "environment"]%' AND query LIKE '%environment:staging%' AND query LIKE '%!transaction:/checkout%' AND query LIKE '%"statsPeriod": "7d"%';
+----
+2
+
+# timestamp range → start / end; spans dataset.
+query TR
+SELECT span_op, sum_span_duration FROM sentry.main.discover('spans', ['span.op', 'sum(span.duration)', 'timestamp']) WHERE timestamp >= TIMESTAMPTZ '2026-11-15 00:00:00+00' AND span_op = 'db' ORDER BY timestamp;
+----
+db	12.5
+db	3.0
+db	3.4
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/events/') WHERE query LIKE '%"dataset": "spans"%' AND query LIKE '%"start": "2026-11-15T00:00:00.000Z"%' AND query LIKE '%span.op:db%';
+----
+1
+
+query IT
+SELECT count, last_seen FROM sentry.main.discover('errors', ['count()', 'last_seen()'], query := 'error.type:KeyError');
+----
+2	2026-11-14 22:00:00+00
+
 statement error
-SELECT * FROM sentry.main.fetch_items('ftp://example.com');
+SELECT * FROM sentry.main.discover('errors', ['count()', 'count( )']);
 ----
-<REGEX>:.*
-
-# page_size is a named argument constrained to [1, 1000].
-statement error
-SELECT * FROM sentry.main.fetch_items('{SENTRY_MOCK_API}', page_size := 0);
-----
-<REGEX>:.*
+<REGEX>:.*both become column.*
 
 statement error
-SELECT * FROM sentry.main.fetch_items('{SENTRY_MOCK_API}', page_size := 5000);
+SELECT * FROM sentry.main.discover('logs', ['message']);
 ----
-<REGEX>:.*
+<REGEX>:.*dataset.*
+
+statement error
+SELECT * FROM sentry.main.discover('errors', ['bogus.field']);
+----
+<REGEX>:.*HTTP 400.*unknown field.*
+
+# ---------------------------------------------------------------------- releases
+
+query TTIITT
+SELECT version, status, new_issues, deploy_count, last_deploy_environment, authors FROM sentry.main.releases() ORDER BY version;
+----
+backend@2.3.1	open	0	1	production	[Raj Patel]
+backend@2.4.0	open	2	2	production	[Jane Doe, Raj Patel]
+frontend@3.0.2	open	1	1	production	[Li Wei]
+frontend@3.1.0	open	1	2	production	[Li Wei]
+mobile@5.2.0	open	1	0	NULL	[]
+
+query TT
+SELECT version, released_at FROM sentry.main.releases() WHERE status = 'archived';
+----
+backend@2.2.0	2026-08-01 11:00:00+00
+
+query T
+SELECT version FROM sentry.main.releases() WHERE version = 'frontend@3.1.0';
+----
+frontend@3.1.0
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/releases/') WHERE query LIKE '%"query": "frontend@3.1.0"%' OR query LIKE '%"status": "archived"%';
+----
+2
+
+query TTRRT
+SELECT version, project_slug, crash_free_sessions, adoption, adoption_stage FROM sentry.main.release_health() ORDER BY crash_free_sessions LIMIT 2;
+----
+mobile@5.2.0	mobile	93.2	64.0	adopted
+frontend@3.1.0	frontend	96.4	81.0	adopted
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/releases/') WHERE query LIKE '%"health": "1"%';
+----
+2
+
+query TTTT
+SELECT version, environment, created_at, url FROM sentry.main.release_deploys() WHERE environment = 'production' ORDER BY created_at;
+----
+frontend@3.0.2	production	2026-10-15 10:06:00+00	https://ci.acme.example/deploys/11
+backend@2.3.1	production	2026-10-28 10:40:00+00	https://ci.acme.example/deploys/21
+backend@2.4.0	production	2026-11-10 12:15:00+00	https://ci.acme.example/deploys/32
+frontend@3.1.0	production	2026-11-12 10:08:00+00	https://ci.acme.example/deploys/42
+
+query TTT
+SELECT deploy_id, environment, started_at FROM sentry.main.release_deploys(version := 'backend@2.4.0') ORDER BY deploy_id;
+----
+31	staging	2026-11-10 11:10:00+00
+32	production	2026-11-10 12:00:00+00
+
+query TTI
+SELECT version, author, count(*) FROM sentry.main.release_commits() WHERE version IN ('backend@2.4.0', 'frontend@3.1.0') GROUP BY ALL ORDER BY ALL;
+----
+backend@2.4.0	Jane Doe	2
+backend@2.4.0	Raj Patel	1
+frontend@3.1.0	Li Wei	2
+
+query I
+SELECT count(*) FROM sentry.main.release_commits(version := 'nope@1.0');
+----
+0
+
+# ------------------------------------------------------------------------ alerts
+
+query TTITI
+SELECT project_slug, name, frequency_minutes, snoozed, action_count FROM sentry.main.issue_alert_rules() ORDER BY project_slug, name;
+----
+backend	Notify on new backend errors	30	false	1
+backend	Page on high-volume issues	60	true	2
+frontend	Frontend regressions	1440	false	1
+
+query T
+SELECT json_extract_string(actions, '$[0].channel') FROM sentry.main.issue_alert_rules(project_slug := 'backend') WHERE name LIKE 'Notify%';
+----
+#backend-alerts
+
+query TTTRR
+SELECT name, aggregate, threshold_type, critical_threshold, warning_threshold FROM sentry.main.metric_alert_rules() ORDER BY name;
+----
+Checkout p95 latency	p95(transaction.duration)	above	1200.0	900.0
+Crash-free sessions	percentage(sessions_crashed, sessions) AS _crash_rate_alert_aggregate	below	95.0	NULL
+Error spike	count()	above	500.0	NULL
+
+query TTTTR
+SELECT incident_id, status, raw_status, severity, time_to_resolve_seconds FROM sentry.main.metric_alert_incidents() ORDER BY incident_id;
+----
+41	resolved	closed	NULL	2700.0
+42	resolved	closed	NULL	7200.0
+43	triggered	critical	critical	NULL
+44	triggered	warning	warning	NULL
+
+query TT
+SELECT incident_id, alert_rule_name FROM sentry.main.metric_alert_incidents() WHERE status = 'triggered' ORDER BY incident_id;
+----
+43	Crash-free sessions
+44	Checkout p95 latency
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/incidents/') WHERE query LIKE '%"status": "open"%';
+----
+1
+
+# ------------------------------------------------------------------------- crons
+
+query TTTTT
+SELECT slug, schedule, environment_status, last_check_in, next_check_in FROM sentry.main.monitors() ORDER BY slug;
+----
+hourly-sync	every 1 hour	error	2026-11-15 11:00:00+00	2026-11-15 12:00:00+00
+nightly-billing	0 2 * * *	ok	2026-11-15 02:00:00+00	2026-11-16 02:00:00+00
+weekly-report	0 6 * * 1	missed_checkin	2026-11-03 06:00:00+00	2026-11-10 06:00:00+00
+
+query TTI
+SELECT monitor_slug, status, count(*) FROM sentry.main.monitor_checkins() GROUP BY ALL ORDER BY ALL;
+----
+hourly-sync	error	1
+hourly-sync	ok	2
+hourly-sync	timeout	1
+nightly-billing	error	1
+nightly-billing	ok	3
+weekly-report	missed	1
+weekly-report	ok	1
+
+query TI
+SELECT checkin_id, duration_ms FROM sentry.main.monitor_checkins(monitor_slug := 'hourly-sync') WHERE environment = 'production' AND created_at >= TIMESTAMPTZ '2026-11-15 10:00:00+00' ORDER BY checkin_id;
+----
+ch-1	3000
+ch-3	2500
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/monitors/hourly-sync/checkins/') WHERE query LIKE '%"environment": "production"%' AND query LIKE '%"start": "2026-11-15T10:00:00.000Z"%';
+----
+1
+
+# ----------------------------------------------------------------------- replays
+
+query TTTIII
+SELECT replay_id, environment, browser_name, error_count, rage_click_count, duration_seconds FROM sentry.main.replays() ORDER BY started_at;
+----
+r0000000000000000000000000000004	staging	Chrome	0	1	45
+r0000000000000000000000000000003	production	Safari	0	0	300
+r0000000000000000000000000000002	production	Firefox	1	0	64
+r0000000000000000000000000000001	production	Chrome	2	3	182
+
+query TT
+SELECT replay_id, user_id FROM sentry.main.replays() WHERE error_count >= 1 AND browser_name = 'Chrome';
+----
+r0000000000000000000000000000001	u-1
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/replays/') WHERE query LIKE '%"query": "browser.name:Chrome count_errors:>=1"%';
+----
+1
+
+query I
+SELECT count(*) FROM sentry.main.replays(stats_period := '180d');
+----
+5
+
+# -------------------------------------------------------------------- feedback
+
+query TTTTT
+SELECT project_slug, feedback_id, issue_short_id, name, email FROM sentry.main.user_feedback() ORDER BY feedback_id;
+----
+frontend	f-1	FRONTEND-1	NULL	NULL
+frontend	f-2	FRONTEND-1	NULL	NULL
+frontend	f-3	NULL	NULL	NULL
+backend	f-4	BACKEND-1	NULL	NULL
+
+query TT
+SELECT name, email FROM sentry.main.user_feedback(project_slug := 'backend', include_pii := true);
+----
+Ops	ops@acme.example
+
+# --------------------------------------------------------------- audit log / usage
+
+query TTT
+SELECT event, actor, created_at FROM sentry.main.audit_log() WHERE event = 'member.invite' ORDER BY created_at;
+----
+member.invite	Jane Doe	2024-07-01 09:00:00+00
+member.invite	Jane Doe	2026-11-12 09:00:00+00
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/audit-logs/') WHERE query LIKE '%"event": "member.invite"%';
+----
+1
+
+statement error
+SELECT count(*) FROM sentry.main.audit_log(organization := 'globex');
+----
+<REGEX>:.*audit logs are not available for organization 'globex'.*
+
+query TTI
+SELECT category, outcome, sum(quantity)::BIGINT FROM sentry.main.usage_stats() GROUP BY ALL ORDER BY ALL;
+----
+error	accepted	4340
+error	rate_limited	30
+replay	accepted	155
+transaction	accepted	15500
+transaction	filtered	620
+
+query TI
+SELECT reason, sum(quantity)::BIGINT FROM sentry.main.usage_stats() WHERE outcome = 'rate_limited' AND category = 'error' GROUP BY reason;
+----
+key_quota	30
+
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/stats_v2/') WHERE query LIKE '%"category": "error"%' AND query LIKE '%"outcome": "rate_limited"%' AND query LIKE '%"interval": "1d"%' AND query LIKE '%"statsPeriod": "30d"%';
+----
+1
+
+query I
+SELECT count(DISTINCT time) FROM sentry.main.usage_stats(interval := '1h', stats_period := '24h') WHERE category = 'transaction';
+----
+24
+
+# ------------------------------------------------------------- rate limits / auth
+
+# Every request carried the bearer token after the secret was fixed, and the 429 / 503
+# answers were retried (two requests where one would have done).
+query I
+SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/teams/') WHERE seq = (SELECT min(seq) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/teams/'));
+----
+1
+
+query T
+SELECT DISTINCT auth FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/organizations/acme/issues/');
+----
+ok

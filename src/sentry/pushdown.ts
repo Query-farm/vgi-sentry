@@ -85,10 +85,12 @@ export function constraintsOf(filters: PushdownFilters | undefined): Constraint[
   return out;
 }
 
-/** A pushed literal for a TIMESTAMPTZ column as epoch milliseconds (µs bigint, ms number, Date, ISO). */
+/** A TIMESTAMPTZ literal or argument as epoch milliseconds (µs bigint / number, ms number, Date, ISO). */
 export function toEpochMs(v: unknown): number | undefined {
   if (typeof v === "bigint") return Number(v) / 1000;
-  if (typeof v === "number") return v;
+  // TIMESTAMPTZ arguments can arrive as a number of microseconds; epoch ms for any
+  // date before year 5138 is below 1e14, so larger numbers are microseconds.
+  if (typeof v === "number") return Math.abs(v) >= 1e14 ? v / 1000 : v;
   if (v instanceof Date) return v.getTime();
   if (typeof v === "string") {
     const t = Date.parse(v);
