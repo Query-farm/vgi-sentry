@@ -82,52 +82,54 @@ const SOURCES_MD =
   "- [Auth tokens](https://docs.sentry.io/account/auth-tokens/)";
 
 export const CATALOG_COMMENT =
-  "Sentry error and performance monitoring as SQL: issues with pushed-down issue search, events, Discover queries, releases and deploys, alerts, cron monitors, replays and usage, read-only from sentry.io or a self-hosted Sentry.";
+  "Sentry error and performance monitoring as read-only SQL, from sentry.io or a self-hosted Sentry, with WHERE filters pushed into Sentry's own search syntax.";
 
 export const CATALOG_DOC_LLM =
   "Read-only SQL access to Sentry (sentry.io, its us / de regions, or self-hosted) through the REST API. Reach " +
-  "for it to answer: which errors are hurting users right now and since when (issues: WHERE status, level, " +
-  "priority, first_seen / last_seen, assignee, project_slug push down as Sentry issue search terms; tags := " +
-  "['browser.name:Chrome'] and query := add raw search), what an issue looks like (issue_events with the " +
-  "innermost exception and in-app frame; issue_tags / issue_tag_values for its browser / release / user " +
-  "distribution), ad-hoc aggregates over errors, transactions and spans (discover(dataset, fields) — e.g. " +
-  "['transaction', 'count()', 'p95(transaction.duration)']; columns are the sanitised field names), what " +
-  "shipped and whether it is stable (releases, release_health, release_deploys, release_commits), how alerting " +
-  "is configured and how noisy it is (issue_alert_rules, metric_alert_rules, metric_alert_incidents), whether " +
-  "scheduled jobs run (monitors, monitor_checkins), frontend UX signals (replays: metadata only), user feedback " +
-  "(names / emails only with include_pii := true), who changed what (audit_log, Business plan) and how much " +
-  "volume is accepted or dropped (usage_stats). Every object needs a `sentry` DuckDB secret with AUTH_TOKEN and " +
-  "optional REGION ('us' / 'de'), BASE_URL (self-hosted) and ORGANIZATION (default organization slug). Without " +
-  "an organization every organization the token sees is read. Issue, event and replay functions default to a " +
-  "90-day window (stats_period / start_time / end_time), discover to 14 days, usage_stats to 30 days.";
+  "for it to answer operational questions an engineer would otherwise click through the Sentry UI for: which " +
+  "errors are hurting users right now and since when, what a failing issue's events and tag distribution look " +
+  "like, ad-hoc aggregates over errors, transactions and spans, what shipped and whether it is stable, how " +
+  "alerting is configured and how noisy it is, whether scheduled jobs check in, what users experienced and " +
+  "reported, who changed the organization's settings, and how much event volume is accepted or dropped. " +
+  "Authentication: every object needs a `sentry` DuckDB secret with AUTH_TOKEN and optional REGION ('us' / " +
+  "'de'), BASE_URL (self-hosted) and ORGANIZATION (default organization slug); without an organization every " +
+  "organization the token sees is read. Filtering: WHERE predicates on status, level, priority, timestamps, " +
+  "assignee, project and similar columns become Sentry search terms or request parameters and are re-checked " +
+  "exactly, so only matching rows cross the network. Time-windowed functions take stats_period / start_time / " +
+  "end_time and document their own default window. Privacy: session replays are metadata only, and reporter " +
+  "names and emails need an explicit opt-in.";
 
 export const CATALOG_DOC_MD =
   "# Sentry\n\n" +
-  "Query Sentry from DuckDB: organizations, projects, teams, members and environments; issues with their " +
-  "events and tags; Discover queries over errors, transactions and spans; releases with health, deploys and " +
-  "commits; issue and metric alert rules and metric alert incidents; cron monitors and check-ins; session " +
-  "replay metadata; user feedback; the audit log; and usage stats. Read-only.\n\n" +
+  "Query Sentry from DuckDB to triage errors, check release stability, audit alerting and cron monitoring, " +
+  "and watch event volume, without leaving SQL. Read-only, against sentry.io (US or EU) or a self-hosted " +
+  "Sentry.\n\n" +
   "Create a `sentry` secret with an auth token (`AUTH_TOKEN`); add `REGION 'de'` for EU data residency, " +
   "`BASE_URL` for self-hosted Sentry and `ORGANIZATION` for a default organization. WHERE filters become " +
   "Sentry issue / event search terms, so only matching rows cross the network; `Link` cursor paging and the " +
   "`X-Sentry-Rate-Limit-*` headers are handled for you." +
   SOURCES_MD;
 
+export const SCHEMA_COMMENT =
+  "Sentry's REST API collections as SQL, scoped by organization, project, issue or release arguments.";
+
 export const SCHEMA_DOC_LLM =
-  "Sentry REST API collections as SQL. `organizations` is a table; everything else is a table function with an " +
-  "optional organization := named argument (NULL = the secret's ORGANIZATION, else all organizations). " +
-  "Per-project functions (issue_alert_rules, user_feedback) take project_slug :=; per-issue functions " +
-  "(issue_events, issue_tags, issue_tag_values) need issue_id := (from issues()); per-release functions " +
-  "(release_deploys, release_commits) take version := and otherwise read every open release. issues() and " +
-  "discover() translate WHERE filters into Sentry search syntax and re-check them exactly. All objects need a " +
-  "`sentry` secret.";
+  "Sentry REST API collections as SQL. The organization list is a plain table; everything else is a table " +
+  "function with an optional organization := named argument (NULL = the secret's ORGANIZATION, else all " +
+  "organizations), because Sentry scopes its endpoints by organization. Narrower scopes are named arguments " +
+  "too: per-project functions take project_slug :=, per-issue functions require issue_id := (take ids from the " +
+  "issue search), and per-release functions take version := or otherwise read every open release, one call " +
+  "each. The issue search and Discover functions translate WHERE filters into Sentry search syntax and " +
+  "re-check them exactly; each function's description lists its pushed-down columns and arguments. All " +
+  "objects need a `sentry` secret.";
 
 export const SCHEMA_DOC_MD =
   "## main\n\n" +
-  "Sentry collections: organization structure, issues and events, Discover, releases, alerts, crons, replays " +
-  "and administration.\n\n" +
-  "Functions take the organization, project, issue or release as named arguments or pushed filters. Filters " +
-  "push down into Sentry's search syntax and request parameters.\n\n" +
+  "Everything in one schema, mirroring Sentry's REST API: the organization structure, issues and their " +
+  "events, Discover aggregates, release health, alerting, cron monitoring, replays and administration.\n\n" +
+  "Functions take the organization, project, issue or release as named arguments or pushed filters, and " +
+  "filters push down into Sentry's search syntax and request parameters, so scope a query as tightly as " +
+  "you can before it pages through results.\n\n" +
   "All objects need a `sentry` secret.";
 
 export const AGENT_TEST_TASKS = [
