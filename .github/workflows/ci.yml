@@ -66,18 +66,15 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             # DuckDB can't exec the sh wrappers in bin/ on Windows, so compile
-            # the worker and the recipe runner into standalone executables.
+            # the worker into a standalone executable.
             bun build src/worker.ts --compile --outfile dist/vgi-sentry-worker.exe
-            bun build examples/run.ts --compile --outfile dist/run-recipe.exe
             WORKER="$(cygpath -m "$PWD/dist/vgi-sentry-worker.exe")"
-            RECIPES_WORKER="$(cygpath -m "$PWD/dist/run-recipe.exe")"
             HAYBARN_UNITTEST="$PWD/.tools/Scripts/haybarn-unittest.exe"
           else
             WORKER="$PWD/bin/vgi-sentry-worker"
-            RECIPES_WORKER="$PWD/bin/run-recipe"
             HAYBARN_UNITTEST="$PWD/.tools/bin/haybarn-unittest"
           fi
-          export WORKER RECIPES_WORKER HAYBARN_UNITTEST
+          export WORKER HAYBARN_UNITTEST
           TRANSPORT=${{ matrix.transport }} PYTHON="uv run --no-project python" ci/run-integration.sh
 
   metadata:
