@@ -340,6 +340,8 @@ export function tagsOf(spec: {
   docMd: string;
   pushdown?: string;
   columns?: Col[];
+  /** Markdown table(s) describing columns that vary by argument (vgi.result_dynamic_columns_md). */
+  resultDynamicMd?: string;
 }): Record<string, string> {
   const tags: Record<string, string> = {
     domain: "observability",
@@ -351,6 +353,7 @@ export function tagsOf(spec: {
       docMd: spec.docMd + (spec.pushdown ? `\n\n**Pushdown:** ${spec.pushdown}` : ""),
     }),
   };
+  if (spec.resultDynamicMd) tags["vgi.result_dynamic_columns_md"] = spec.resultDynamicMd;
   if (spec.columns) {
     tags["vgi.result_columns_schema"] = JSON.stringify(
       spec.columns.map((c) => ({ name: c.name, type: c.sqlType, description: c.doc })),

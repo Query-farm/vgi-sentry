@@ -176,6 +176,24 @@ export const AGENT_TEST_TASKS = [
     name: "rate_limited_errors",
     prompt: "How many error events were rate limited in the acme organization over the last 30 days?",
   },
+  {
+    name: "invite_events",
+    prompt: "Who invited members to the acme organization, according to the audit log, and when?",
+  },
+  { name: "hidden_environments", prompt: "Which acme environments are hidden?" },
+  { name: "snoozed_issue_rules", prompt: "Which acme issue alert rules are snoozed (muted)?" },
+  { name: "issue_tag_keys", prompt: "Which tag keys does acme issue 4504002 have?" },
+  { name: "members_without_2fa", prompt: "Which active acme members do not have two-factor authentication?" },
+  {
+    name: "latency_alert_threshold",
+    prompt: "What is the critical threshold of the acme metric alert on p95 checkout latency?",
+  },
+  { name: "failed_job_runs", prompt: "How many acme cron check-ins ended in error, missed or timeout, per monitor?" },
+  { name: "replay_projects", prompt: "Which acme projects send session replays?" },
+  { name: "release_authors", prompt: "Who authored the commits in acme release backend@2.4.0?" },
+  { name: "newest_release", prompt: "What is the most recently created open acme release?" },
+  { name: "rage_click_replays", prompt: "How many acme session replays had at least one rage click?" },
+  { name: "feedback_per_issue", prompt: "Which acme issue received the most user feedback reports?" },
 ];
 
 /** Bind-only probes: each binds the function and shows its columns without fetching (LIMIT 0). */
@@ -193,7 +211,7 @@ export const EXECUTABLE_EXAMPLES = [
 ];
 
 export const CATALOG_TAGS: Record<string, string> = {
-  "vgi.title": "Sentry Error and Performance Monitoring",
+  "vgi.title": "Sentry Monitoring",
   "vgi.subtitle": "Sentry issues, events, Discover, releases, alerts, crons, replays and usage as SQL tables.",
   "vgi.doc_llm": CATALOG_DOC_LLM,
   "vgi.doc_md": CATALOG_DOC_MD,

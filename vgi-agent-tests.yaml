@@ -1,16 +1,86 @@
 # Private graders for the public vgi.agent_test_tasks in the worker's catalog metadata.
-# `vgi-lint lint --ai` runs an agent on each prompt and grades it with check_sql.
-# See https://github.com/Query-farm/vgi-lint-check (VGI920).
+# `vgi-lint lint --ai` runs an agent on each prompt and grades it (VGI920).
+#
+# Every sentry function needs a `sentry` secret pointing at a Sentry organization (the
+# offline replay server in test/mock_api/server.py works too: AUTH_TOKEN
+# 'sntrys_test_token', BASE_URL 'http://127.0.0.1:<port>'). The replay data is fixed
+# (relative windows are evaluated against 2026-11-15T12:00Z), so these tasks compare
+# against a reference query.
 tasks:
-  - name: formal_greeting
-    reference_sql: SELECT sentry.main.greet('Grace', 'formal') AS greeting
-  - name: sum_of_squares
-    reference_sql: SELECT sum(squared) AS total FROM sentry.main.sequence_table(10)
-  - name: stepped_sequence
-    reference_sql: SELECT n FROM sentry.main.sequence_table(4, step := 5) ORDER BY n
-  # Reads the public demo API (https://vgi-starter-api.query-farm.services/v1).
-  - name: items_per_category
-    check_sql: >-
-      SELECT count(*) = 3 AND sum(items) = 25
-      FROM (SELECT category, count(*) AS items
-            FROM sentry.main.fetch_items('https://vgi-starter-api.query-farm.services/v1') GROUP BY category)
+  - name: org_slugs
+    reference_sql: SELECT slug FROM sentry.main.organizations ORDER BY slug
+  - name: unresolved_fatal
+    reference_sql: >-
+      SELECT short_id FROM sentry.main.issues(organization := 'acme')
+      WHERE status = 'unresolved' AND level = 'fatal' ORDER BY short_id
+  - name: noisiest_issue
+    reference_sql: >-
+      SELECT short_id, event_count FROM sentry.main.issues(organization := 'acme')
+      ORDER BY event_count DESC LIMIT 1
+  - name: issue_browsers
+    reference_sql: >-
+      SELECT value, count FROM sentry.main.issue_tag_values(organization := 'acme', issue_id := '4504001', key := 'browser')
+      ORDER BY count DESC
+  - name: latest_event_frame
+    reference_sql: >-
+      SELECT top_in_app_frame FROM sentry.main.issue_events(organization := 'acme', issue_id := '4504001', which := 'latest')
+  - name: busiest_transaction
+    reference_sql: >-
+      SELECT transaction FROM sentry.main.discover('transactions', ['transaction', 'count()'], organization := 'acme', sort := '-count()')
+      ORDER BY count DESC LIMIT 1
+  - name: production_deploys
+    reference_sql: >-
+      SELECT DISTINCT version FROM sentry.main.release_deploys(organization := 'acme')
+      WHERE environment = 'production' ORDER BY version
+  - name: least_stable_release
+    reference_sql: >-
+      SELECT version, project_slug FROM sentry.main.release_health(organization := 'acme')
+      WHERE has_health_data ORDER BY crash_free_sessions LIMIT 1
+  - name: failing_monitors
+    reference_sql: >-
+      SELECT slug FROM sentry.main.monitors(organization := 'acme') WHERE environment_status <> 'ok' ORDER BY slug
+  - name: open_metric_incidents
+    reference_sql: >-
+      SELECT incident_id FROM sentry.main.metric_alert_incidents(organization := 'acme')
+      WHERE status = 'triggered' ORDER BY incident_id
+  - name: team_sizes
+    reference_sql: SELECT slug FROM sentry.main.teams(organization := 'acme') ORDER BY member_count DESC LIMIT 1
+  - name: rate_limited_errors
+    reference_sql: >-
+      SELECT sum(quantity) FROM sentry.main.usage_stats(organization := 'acme')
+      WHERE outcome = 'rate_limited' AND category = 'error'
+  - name: invite_events
+    reference_sql: >-
+      SELECT actor, created_at FROM sentry.main.audit_log(organization := 'acme')
+      WHERE event = 'member.invite' ORDER BY created_at
+  - name: hidden_environments
+    reference_sql: SELECT name FROM sentry.main.environments(organization := 'acme', visibility := 'hidden') ORDER BY name
+  - name: snoozed_issue_rules
+    reference_sql: SELECT name FROM sentry.main.issue_alert_rules(organization := 'acme') WHERE snoozed ORDER BY name
+  - name: issue_tag_keys
+    reference_sql: SELECT key FROM sentry.main.issue_tags(organization := 'acme', issue_id := '4504002') ORDER BY key
+  - name: members_without_2fa
+    reference_sql: >-
+      SELECT name FROM sentry.main.members(organization := 'acme') WHERE NOT has_2fa AND NOT pending ORDER BY name
+  - name: latency_alert_threshold
+    reference_sql: >-
+      SELECT critical_threshold FROM sentry.main.metric_alert_rules(organization := 'acme')
+      WHERE aggregate = 'p95(transaction.duration)'
+  - name: failed_job_runs
+    reference_sql: >-
+      SELECT monitor_slug, count(*) AS failures FROM sentry.main.monitor_checkins(organization := 'acme')
+      WHERE status IN ('error', 'missed', 'timeout') GROUP BY monitor_slug ORDER BY monitor_slug
+  - name: replay_projects
+    reference_sql: SELECT slug FROM sentry.main.projects(organization := 'acme') WHERE has_replays ORDER BY slug
+  - name: release_authors
+    reference_sql: >-
+      SELECT DISTINCT author FROM sentry.main.release_commits(organization := 'acme', version := 'backend@2.4.0')
+      ORDER BY author
+  - name: newest_release
+    reference_sql: SELECT version FROM sentry.main.releases(organization := 'acme') ORDER BY created_at DESC LIMIT 1
+  - name: rage_click_replays
+    reference_sql: SELECT count(*) FROM sentry.main.replays(organization := 'acme') WHERE rage_click_count >= 1
+  - name: feedback_per_issue
+    reference_sql: >-
+      SELECT issue_short_id, count(*) AS reports FROM sentry.main.user_feedback(organization := 'acme')
+      WHERE issue_short_id IS NOT NULL GROUP BY issue_short_id ORDER BY reports DESC LIMIT 1

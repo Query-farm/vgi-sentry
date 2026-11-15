@@ -195,7 +195,7 @@ const DOC_LLM =
   "list, e.g. ['transaction', 'count()', 'p95(transaction.duration)'] — plain fields group the aggregates, like " +
   "GROUP BY. Each field becomes a column named by lower-casing and replacing non-alphanumerics with '_' " +
   "(count() → count, p95(transaction.duration) → p95_transaction_duration, user.email → user_email); count-like " +
-  "aggregates are BIGINT, other aggregates and durations DOUBLE, timestamp TIMESTAMPTZ, others VARCHAR. Named " +
+  "aggregates are `BIGINT`, other aggregates and durations `DOUBLE`, timestamp `TIMESTAMPTZ`, others `VARCHAR`. Named " +
   "arguments: query (Sentry event search, e.g. 'level:error http.status_code:500'), sort (a field, '-' for " +
   "descending, e.g. '-count()'; must be one of the fields), project_id, environment, stats_period (default 14d) " +
   "or start_time / end_time, organization. WHERE filters on columns push into the search query (string fields: " +
@@ -221,11 +221,11 @@ export const discover = defineTableFunction<DiscoverArgs, DiscoverState>({
   },
   argDocs: {
     dataset: "errors, transactions, spans or discover (errors + transactions).",
-    fields: "Discover fields and aggregates, e.g. ['transaction', 'count()', 'p95(transaction.duration)'] (1-20).",
+    fields: "The Discover fields and aggregate functions to return, as a list; plain fields group the aggregates.",
     organization:
       "Organization slug (named). NULL uses the secret's ORGANIZATION, else every organization the token can see.",
     query: "Sentry event search (named), e.g. 'level:error browser.name:Firefox'; ANDed with pushed filters.",
-    sort: "Sort field (named), one of the fields, '-' prefix for descending, e.g. '-count()'.",
+    sort: "Sort field (named): a requested field, with a leading '-' for descending order.",
     project_id: "Numeric project id (named); NULL = every project.",
     environment: "Environment name (named); NULL = every environment.",
     ...WINDOW_DOCS,
@@ -326,6 +326,19 @@ export const discover = defineTableFunction<DiscoverArgs, DiscoverState>({
     keywords: "sentry, discover, explore, events, transactions, spans, aggregates, p95, count, performance, errors",
     docLlm: DOC_LLM,
     docMd: outDoc,
+    resultDynamicMd:
+      "The columns follow `fields`: `organization` first, then one column per field in order, named by " +
+      "lower-casing the field and replacing non-alphanumerics with `_`. Count-like aggregates (count(), " +
+      "count_unique(x), count_if(…)) are `BIGINT`; other aggregates (avg, sum, min, max, p50 … p99) and numeric " +
+      "fields (transaction.duration, span.duration, measurements.*) are `DOUBLE`; timestamp, last_seen() and " +
+      "first_seen() are `TIMESTAMP WITH TIME ZONE`; every other field is `VARCHAR`. For " +
+      "`discover('transactions', ['transaction', 'count()', 'p95(transaction.duration)'])`:\n\n" +
+      "| Name | Type | Description |\n" +
+      "| --- | --- | --- |\n" +
+      "| organization | VARCHAR | Slug of the organization queried. |\n" +
+      "| transaction | VARCHAR | Discover field transaction. |\n" +
+      "| count | BIGINT | Discover field count(). |\n" +
+      "| p95_transaction_duration | DOUBLE | Discover field p95(transaction.duration). |",
     pushdown:
       "projection → `field` list (grouping fields kept); string-field `=`/`IN`/`!=` → `field:value`; aggregate and " +
       "numeric comparisons → `count():>=n`; `timestamp` range → `start` / `end`; `organization` picks organizations.",

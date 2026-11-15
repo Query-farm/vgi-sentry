@@ -90,8 +90,8 @@ export const WINDOW_ARGS = {
 export const WINDOW_DOCS = {
   stats_period:
     "Relative time window (named), e.g. '24h', '14d', '90d' (Sentry statsPeriod). Ignored when start_time / end_time is given.",
-  start_time: "Window start (named, TIMESTAMPTZ); with end_time replaces stats_period.",
-  end_time: "Window end (named, TIMESTAMPTZ); defaults to now when only start_time is given.",
+  start_time: "Window start (named); with end_time replaces stats_period.",
+  end_time: "Window end (named); defaults to now when only start_time is given.",
 };
 export const WINDOW_CONSTRAINTS = { stats_period: { pattern: "^[0-9]+[smhdw]$" } };
 
@@ -449,7 +449,7 @@ export const issues = defineSentryTable<IssuesArgs>({
     environment: "Environment name (named), e.g. 'production'; NULL = every environment.",
     query:
       "Raw Sentry issue search (named), e.g. 'assigned:me is:unresolved' or 'url:*checkout*'; ANDed with the pushed filters.",
-    tags: "Tag filters (named) as 'key:value' strings, e.g. ['browser.name:Chrome', 'server_name:web 1'].",
+    tags: "Tag filters (named), each a key:value string; values are quoted for Sentry automatically.",
     sort: "Order (named): date (last seen, default), new (first seen), freq (events), user (users), trends, inbox.",
     ...WINDOW_DOCS,
     page_size: "Issues per Sentry page (named), 1-100 (default 100).",
