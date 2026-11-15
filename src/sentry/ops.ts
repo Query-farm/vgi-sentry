@@ -396,6 +396,7 @@ export const metricAlertRules = defineSentryTable<{ organization: string | null 
     C.json("triggers", "Triggers with their actions (JSON array).", "triggers"),
   ],
   request: (s) => ({ path: `/organizations/${enc(s.organization)}/alert-rules/`, paging: "cursor" }),
+  onError: (err, s) => metricAlertsUnavailable(err, s, "metric alert rules"),
   examples: [
     {
       sql: `SELECT name, aggregate, critical_threshold, time_window_minutes FROM ${Q}.metric_alert_rules() ORDER BY name`,
@@ -407,6 +408,17 @@ export const metricAlertRules = defineSentryTable<{ organization: string | null 
     },
   ],
 });
+
+/** Metric alerts are plan- and token-gated; Sentry answers 403/404 when the org can't use them. */
+function metricAlertsUnavailable(err: SentryError, s: { organization: string }, what: string): SentryError | null {
+  return err.status === 403 || err.status === 404
+    ? new SentryError(
+        `${what} are not available for organization '${s.organization}' (HTTP ${err.status}): metric alerts need a ` +
+          "Sentry plan that includes them and a token with alerts:read scope",
+        err.status,
+      )
+    : null;
+}
 
 /** Sentry IncidentStatus: 1 open, 2 closed, 10 warning, 20 critical. */
 const INCIDENT_STATUS: Record<number, string> = { 1: "open", 2: "closed", 10: "warning", 20: "critical" };
@@ -469,6 +481,8 @@ export const metricAlertIncidents = defineSentryTable<{ organization: string | n
       query: { status: st === "resolved" ? "closed" : st === "triggered" ? "open" : undefined },
     };
   },
+  onError: (err, s) => metricAlertsUnavailable(err, s, "metric alert incidents"),
+
   examples: [
     {
       sql: `SELECT alert_rule_name, count(*) AS incidents, avg(time_to_resolve_seconds) / 60 AS avg_minutes_to_resolve FROM ${Q}.metric_alert_incidents() WHERE status = 'resolved' GROUP BY alert_rule_name ORDER BY incidents DESC`,
@@ -931,6 +945,7 @@ export const auditLog = defineSentryTable<{ organization: string | null }>({
 type StatsArgs = {
   organization: string | null;
   interval: string;
+  by_project: boolean;
   stats_period: string | null;
   start_time: unknown;
   end_time: unknown;
@@ -948,19 +963,25 @@ export const usageStats = defineSentryTable<StatsArgs>({
     "quantity. outcome is accepted, filtered, rate_limited, invalid, abuse, client_discard or cardinality_limited; " +
     "category is error, transaction, attachment, replay, profile, monitor, span …; quantity counts items " +
     "(bytes for attachments). interval := '1d' (default) or '1h'; window: stats_period (default 30d) or " +
-    "start_time / end_time.",
+    "start_time / end_time. by_project := true adds a per-project breakdown, but Sentry then returns window totals " +
+    "only: time is the window start and quantity the window total. project_id is NULL unless by_project is true or " +
+    "a single project_id is filtered.",
   docMd:
-    "## usage_stats(interval := '1d', stats_period := '30d', start_time, end_time)\n\nOne row per bucket and group.",
+    "## usage_stats(interval := '1d', by_project := false, stats_period := '30d', start_time, end_time)\n\n" +
+    "One row per bucket and group. With `by_project := true` Sentry returns only window totals (no time series), " +
+    "so each row's `time` is the window start and `quantity` the total for the whole window.",
   pushdown:
     "`category` (=, IN) → `category=`; `outcome` (=, IN) → `outcome=`; `reason` (=) → `reason=`; `project_id` (=, IN) → " +
     "`project=`; `organization` picks organizations.",
-  args: { interval: utf8(), ...WINDOW_ARGS },
+  args: { interval: utf8(), by_project: bool, ...WINDOW_ARGS },
   argDocs: {
     interval: "Bucket size (named): 1d (default) or 1h.",
+    by_project:
+      "Break usage down per project (named, default false). Sentry then returns totals for the whole window, not a time series.",
     ...WINDOW_DOCS,
     stats_period: "Relative window (named), default 30d.",
   },
-  argDefaults: { interval: "1d", stats_period: null, start_time: null, end_time: null },
+  argDefaults: { interval: "1d", by_project: false, stats_period: null, start_time: null, end_time: null },
   argConstraints: { interval: { choices: ["1h", "1d"] }, ...WINDOW_CONSTRAINTS },
   columns: [
     ORG_COL,
@@ -972,7 +993,10 @@ export const usageStats = defineSentryTable<StatsArgs>({
       "by.outcome",
     ),
     C.str("reason", "Why the item was filtered / dropped (NULL or 'none' when accepted).", "by.reason"),
-    C.str("project_id", "Project id.", (r) => (r.by?.project == null ? null : String(r.by.project))),
+    C.str("project_id", "Project id (NULL unless by_project := true or one project_id is filtered).", (r) => {
+      const p = r.by?.project ?? r.__project;
+      return p == null ? null : String(p);
+    }),
     C.big("quantity", "Items (bytes for attachments) in the bucket.", "__quantity", false),
   ],
   request: (s, { args, constraints }) => ({
@@ -980,7 +1004,7 @@ export const usageStats = defineSentryTable<StatsArgs>({
     paging: "single",
     query: {
       field: "sum(quantity)",
-      groupBy: ["outcome", "category", "reason", "project"],
+      groupBy: args.by_project ? ["outcome", "category", "reason", "project"] : ["outcome", "category", "reason"],
       interval: args.interval ?? "1d",
       category: eqValues(constraints, "category"),
       outcome: eqValues(constraints, "outcome"),
@@ -989,18 +1013,28 @@ export const usageStats = defineSentryTable<StatsArgs>({
       ...windowParams(args, "30d"),
     },
   }),
-  rows: (body) => {
-    const b = body as { intervals?: unknown; groups?: unknown } | null;
+  rows: (body, _s, ctx) => {
+    const b = body as { start?: unknown; intervals?: unknown; groups?: unknown } | null;
     const intervals = Array.isArray(b?.intervals) ? (b.intervals as string[]) : [];
     const groups = Array.isArray(b?.groups) ? (b.groups as Row[]) : [];
+    const start = typeof b?.start === "string" ? b.start : null;
+    const projects = ctx ? eqValues(ctx.constraints, "project_id") : undefined;
+    const onlyProject = Array.isArray(projects) && projects.length === 1 ? projects[0] : undefined;
     const out: Row[] = [];
     for (const g of groups) {
       const series = g.series?.["sum(quantity)"];
-      if (!Array.isArray(series)) continue;
-      intervals.forEach((t, i) => {
-        const q = series[i];
-        if (typeof q === "number" && q !== 0) out.push({ by: g.by, __time: t, __quantity: q });
-      });
+      if (Array.isArray(series) && intervals.length > 0) {
+        intervals.forEach((t, i) => {
+          const q = series[i];
+          if (typeof q === "number" && q !== 0)
+            out.push({ by: g.by, __time: t, __quantity: q, __project: onlyProject });
+        });
+        continue;
+      }
+      // Grouping by project makes Sentry return window totals only (no intervals / series).
+      const total = g.totals?.["sum(quantity)"];
+      if (typeof total === "number" && total !== 0 && start)
+        out.push({ by: g.by, __time: start, __quantity: total, __project: onlyProject });
     }
     return out;
   },

@@ -547,6 +547,9 @@ def route(h, path: str, qs: dict):  # noqa: C901 - one table of routes
             return paginate(h, F.commit_rows(v), page_size(p), p.get("cursor"), h.path_only, qs)
         if sub == "alert-rules/":
             p = Params(qs, {"per_page", "cursor"})
+            if org == "globex":
+                # Matches a live Sentry org without metric alerts (verified 2026-11-15): plain 404.
+                raise ApiError(404, "")
             return paginate(h, F.METRIC_RULES[org], page_size(p), p.get("cursor"), h.path_only, qs)
         if sub == "incidents/":
             p = Params(qs, {"status", "per_page", "cursor", "expand", "title"}, {"project"})
@@ -671,6 +674,12 @@ def r_stats(org, p: Params):
                 q = q // 24
             g["series"][p.get("field")][idx] += q
             g["totals"][p.get("field")] += q
+    if "project" in p.all("groupBy"):
+        # Real Sentry (verified 2026-11-15): grouping by project returns window totals only —
+        # no "intervals" key and no per-group "series".
+        for g in groups.values():
+            g.pop("series", None)
+        return {"start": start.isoformat(), "end": end.isoformat(), "groups": list(groups.values())}
     return {"start": start.isoformat(), "end": end.isoformat(), "intervals": [i.strftime("%Y-%m-%dT%H:%M:%SZ") for i in intervals], "groups": list(groups.values())}
 
 

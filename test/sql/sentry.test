@@ -679,6 +679,11 @@ SELECT count(*) FROM read_json('{SENTRY_FIXTURE_URL}/__requests?path=/api/0/orga
 1
 
 statement error
+SELECT count(*) FROM sentry.main.metric_alert_rules(organization := 'globex');
+----
+<REGEX>:.*metric alert rules are not available for organization 'globex'.*
+
+statement error
 SELECT count(*) FROM sentry.main.audit_log(organization := 'globex');
 ----
 <REGEX>:.*audit logs are not available for organization 'globex'.*
@@ -706,6 +711,32 @@ query I
 SELECT count(DISTINCT time) FROM sentry.main.usage_stats(interval := '1h', stats_period := '24h') WHERE category = 'transaction';
 ----
 24
+
+# Without by_project the request does not group by project (so Sentry keeps the daily series) and
+# project_id is NULL; by_project := true groups by project and Sentry returns window totals only.
+query I
+SELECT count(*) FROM sentry.main.usage_stats() WHERE project_id IS NOT NULL;
+----
+0
+
+query I
+SELECT count(DISTINCT time) FROM sentry.main.usage_stats(by_project := true);
+----
+1
+
+query TTI
+SELECT category, outcome, sum(quantity)::BIGINT FROM sentry.main.usage_stats(by_project := true) GROUP BY ALL ORDER BY ALL;
+----
+error	accepted	4340
+error	rate_limited	30
+replay	accepted	155
+transaction	accepted	15500
+transaction	filtered	620
+
+query I
+SELECT count(DISTINCT project_id) > 1 FROM sentry.main.usage_stats(by_project := true);
+----
+true
 
 # ------------------------------------------------------------- rate limits / auth
 
