@@ -1,5 +1,5 @@
 {
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Sentry issues, events, Discover, releases, alerts, crons, replays and usage as SQL tables in DuckDB.",
@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@query-farm/apache-arrow": "^21.1.1",
-    "@query-farm/vgi": "~0.50.0",
+    "@query-farm/vgi": "~0.50.1",
     "@query-farm/vgi-rpc": "^0.29.7"
   },
   "devDependencies": {

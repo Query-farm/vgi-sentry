@@ -140,7 +140,7 @@ about to run dry, and 5xx and network errors retry with exponential backoff.
 **Prerequisites:** [Bun](https://bun.sh) 1.3+ (for a source checkout).
 
 ```bash
-git clone --branch v0.1.0 https://github.com/Query-farm/vgi-sentry.git && cd vgi-sentry
+git clone --branch v0.1.1 https://github.com/Query-farm/vgi-sentry.git && cd vgi-sentry
 bun install --frozen-lockfile
 ```
 
