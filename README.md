@@ -140,7 +140,7 @@ about to run dry, and 5xx and network errors retry with exponential backoff.
 **Prerequisites:** [Bun](https://bun.sh) 1.3+ (for a source checkout).
 
 ```bash
-git clone --branch v0.1.1 https://github.com/Query-farm/vgi-sentry.git && cd vgi-sentry
+git clone --branch v0.2.0 https://github.com/Query-farm/vgi-sentry.git && cd vgi-sentry
 bun install --frozen-lockfile
 ```
 
@@ -154,7 +154,7 @@ LOAD vgi FROM query_farm;
 ATTACH 'sentry' (TYPE vgi, LOCATION '/abs/path/to/vgi-sentry/bin/vgi-sentry-worker');
 ```
 
-**Haybarn 2.0** (`uvx haybarn-cli`):
+**Haybarn 2.0.1+** (`uvx haybarn-cli`; Haybarn 2.0.0 serves an older vgi extension that cannot attach this worker):
 
 ```sql
 INSTALL vgi FROM community;
